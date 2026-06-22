@@ -7,7 +7,8 @@ gnarly one-liner you wrote three weeks ago.
 It's like `tldr`/`navi` cheatsheets, but for *your own* analytical SQL. Your throwaway
 queries become reusable tools without becoming things you have to maintain.
 
-> Status: 🏗️ v0.1 in progress. See [PLAN.md](./PLAN.md) for the full roadmap.
+> Status: 🏗️ v0.1 in progress. **M2 (catalog store + `add`/`ls`/`show`/`rm`) is live.**
+> See [PLAN.md](./PLAN.md) for the full roadmap.
 
 ## Why
 
@@ -16,15 +17,57 @@ with a graveyard of great one-off queries lost in shell history and scratch file
 engine is solved; the *workflow around it* is still messy. quackpack is the missing,
 local-first, zero-server bit: **save the query, rerun the query.**
 
-## The idea (preview)
+## Usage (available now)
+
+Save a query — inline, from a file, or piped on stdin. Any `:param` placeholders are
+detected and recorded automatically.
 
 ```console
-$ quackpack add --name top-errors --tags logs,triage \
+$ quackpack add --name top-errors --tags logs,triage --desc "5xx by path" \
     -q "SELECT path, count(*) c FROM read_parquet(:src) WHERE status >= 500 GROUP BY 1 ORDER BY c DESC LIMIT :n"
+saved top-errors  tags: logs, triage  params: src, n
 
+$ cat report.sql | quackpack add --name monthly-revenue --tags finance
+$ quackpack add --name quick -f ./queries/quick.sql
+```
+
+List, filter, inspect, and remove:
+
+```console
 $ quackpack ls
-  top-errors   [logs, triage]   last run: never
+┏━━━━━━━━━━━━┳━━━━━━━━━━━━━━┳━━━━━━━━┳━━━━━━━━━━━━┓
+┃ name       ┃ tags         ┃ params ┃ description┃
+┡━━━━━━━━━━━━╇━━━━━━━━━━━━━━╇━━━━━━━━╇━━━━━━━━━━━━┩
+│ top-errors │ logs, triage │ src, n │ 5xx by path│
+└────────────┴──────────────┴────────┴────────────┘
 
+$ quackpack ls --tag finance          # filter by tag
+$ quackpack show top-errors           # SQL + metadata (syntax-highlighted)
+$ quackpack rm top-errors --yes       # remove (omit --yes to confirm)
+```
+
+### Where queries live
+
+A single human-readable, diffable YAML file at `~/.quackpack/pack.yaml`. Set
+`QUACKPACK_HOME` to relocate it (e.g. point it inside a git repo to version your pack):
+
+```yaml
+version: 1
+queries:
+  - name: top-errors
+    sql: SELECT path, count(*) c FROM read_parquet(:src) WHERE status >= 500 ...
+    tags: [logs, triage]
+    desc: 5xx by path
+    created: "2026-06-22T19:44:07+00:00"
+    params: [src, n]
+```
+
+## Coming next (M3+)
+
+`quackpack run` executes a saved query against a target file/db, binds `:params`, and
+renders the results:
+
+```console
 $ quackpack run top-errors --param src='logs/*.parquet' --param n=10
 ┏━━━━━━━━━━━━━━━━┳━━━━━┓
 ┃ path           ┃  c  ┃
@@ -34,7 +77,7 @@ $ quackpack run top-errors --param src='logs/*.parquet' --param n=10
 └────────────────┴─────┘
 ```
 
-*(Interface is illustrative and may change during v0.1.)*
+*(The `run` interface is illustrative and may change during v0.1.)*
 
 ## Install
 
