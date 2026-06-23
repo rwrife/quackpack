@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import re
 
-__all__ = ["extract_params"]
+__all__ = ["extract_params", "to_duckdb_placeholders", "mask_literals"]
 
 # A :param is a colon followed by an identifier (letter/underscore, then word
 # chars). We deliberately ignore:
@@ -44,6 +44,11 @@ def _mask_literals(sql: str) -> str:
     return _MASK_RE.sub(lambda m: " " * len(m.group(0)), sql)
 
 
+# Public alias so other modules (e.g. the engine) can reuse literal masking
+# without reaching into a private name.
+mask_literals = _mask_literals
+
+
 def extract_params(sql: str) -> list[str]:
     """Return the distinct ``:param`` names in *sql*, in first-seen order.
 
@@ -59,3 +64,33 @@ def extract_params(sql: str) -> list[str]:
     for match in _PARAM_RE.finditer(masked):
         seen.setdefault(match.group(1), None)
     return list(seen)
+
+
+def to_duckdb_placeholders(sql: str) -> str:
+    """Rewrite ``:name`` placeholders to DuckDB's ``$name`` syntax.
+
+    quackpack's catalog standardises on ``:param`` (SQLite/Postgres style), but
+    DuckDB names parameters with ``$name``. This converts only *real* params —
+    colons inside string/identifier literals and ``::casts`` are left untouched,
+    using the same masking rules as :func:`extract_params`.
+
+    >>> to_duckdb_placeholders("select * from t where id = :id")
+    'select * from t where id = $id'
+    >>> to_duckdb_placeholders("select 1::int as x, :n")
+    'select 1::int as x, $n'
+    >>> to_duckdb_placeholders("select '12:30' as t, :real_one")
+    "select '12:30' as t, $real_one"
+    """
+    masked = _mask_literals(sql)
+
+    # Walk matches on the masked text but splice replacements into the original
+    # so literal contents are preserved verbatim.
+    out: list[str] = []
+    last = 0
+    for match in _PARAM_RE.finditer(masked):
+        start, end = match.span()
+        out.append(sql[last:start])
+        out.append("$" + match.group(1))
+        last = end
+    out.append(sql[last:])
+    return "".join(out)
