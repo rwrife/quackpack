@@ -1,8 +1,9 @@
 """Command-line entry point for quackpack.
 
-Wires the Typer app together. M1 shipped ``--version`` + ``hello``; M2 adds the
-catalog CRUD commands (``add`` / ``ls`` / ``show`` / ``rm``). The run engine and
-parameters land in later milestones.
+Wires the Typer app together. M1 shipped ``--version`` + ``hello``; M2 added the
+catalog CRUD commands (``add`` / ``ls`` / ``show`` / ``rm``). M3 adds ``run`` —
+executing a stored query against a ``--db``/``--file`` target via DuckDB (with a
+SQLite fallback). Parameter prompting lands in M4.
 """
 
 from __future__ import annotations
@@ -17,6 +18,8 @@ from rich.syntax import Syntax
 from rich.table import Table
 
 from . import __version__
+from .engine import EngineError, available_engines, run_query
+from .render import FORMATS, render
 from .store import (
     Catalog,
     CatalogError,
@@ -119,8 +122,27 @@ def _read_sql(query: Optional[str], file: Optional[Path]) -> str:
     return text
 
 
+def _parse_params(pairs: Optional[List[str]]) -> dict:
+    """Parse repeated ``--param key=value`` flags into a dict.
+
+    Values are kept as strings here; native driver binding handles coercion for
+    the common cases, and rich typing/prompts arrive in M4. A missing ``=`` is a
+    user error rather than a silent no-op.
+    """
+    out: dict[str, str] = {}
+    for item in pairs or []:
+        if "=" not in item:
+            raise _fail(f"Bad --param {item!r}; expected key=value.")
+        key, _, value = item.partition("=")
+        key = key.strip()
+        if not key:
+            raise _fail(f"Bad --param {item!r}; the key is empty.")
+        out[key] = value
+    return out
+
+
 # --------------------------------------------------------------------------
-# Commands: add / ls / show / rm
+# Commands: add / ls / show / run / rm
 # --------------------------------------------------------------------------
 
 
@@ -223,6 +245,78 @@ def show(
     if meta:
         console.print("[dim]" + "  |  ".join(meta) + "[/dim]")
     console.print(Syntax(q.sql, "sql", theme="ansi_dark", word_wrap=True))
+
+
+@app.command()
+def run(
+    name: str = typer.Argument(..., help="Name of the saved query to execute."),
+    db: Optional[Path] = typer.Option(
+        None, "--db", help="Database file to query (DuckDB or SQLite)."
+    ),
+    file: Optional[Path] = typer.Option(
+        None,
+        "--file",
+        "-f",
+        help="Data file to expose to the query (CSV / Parquet / SQLite).",
+    ),
+    param: Optional[List[str]] = typer.Option(
+        None,
+        "--param",
+        "-p",
+        help="Bind a :param as key=value (repeatable).",
+    ),
+    fmt: str = typer.Option(
+        "table",
+        "--format",
+        "-F",
+        help=f"Output format: {', '.join(FORMATS)}.",
+    ),
+    engine: str = typer.Option(
+        "auto",
+        "--engine",
+        "-e",
+        help="Execution engine: auto, duckdb, or sqlite.",
+    ),
+) -> None:
+    """Run a stored query against a data target and render the results.
+
+    The query's SQL can reference a ``--file`` by its auto-derived relation name
+    (the file's stem, e.g. ``sales.csv`` -> ``sales``) or via DuckDB table
+    functions like ``read_csv_auto('sales.csv')``. ``:param`` placeholders are
+    bound from ``--param key=value`` (interactive prompting arrives in M4).
+    """
+    if fmt.lower() not in FORMATS:
+        raise _fail(f"Unknown --format {fmt!r}. Choose one of: {', '.join(FORMATS)}.")
+
+    catalog = _load()
+    try:
+        query = catalog.get(name)
+    except QueryNotFoundError as exc:
+        raise _fail(str(exc))
+
+    params = _parse_params(param)
+
+    # Warn (don't block) when the query expects params the caller didn't supply;
+    # the engine will surface a precise binding error if they're truly required.
+    missing = [p for p in query.params if p not in params]
+    if missing:
+        err_console.print(
+            f"[yellow]warning:[/yellow] no value given for: {', '.join(missing)} "
+            f"(pass --param {missing[0]}=... )"
+        )
+
+    try:
+        result = run_query(
+            query.sql,
+            db=db,
+            file=file,
+            params=params,
+            engine=engine,
+        )
+    except EngineError as exc:
+        raise _fail(str(exc))
+
+    render(result, fmt, console)
 
 
 @app.command()

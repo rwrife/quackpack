@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from quackpack.params import extract_params
+from quackpack.params import extract_params, to_duckdb_placeholders
 
 
 def test_basic_params_in_order() -> None:
@@ -30,3 +30,35 @@ def test_colon_inside_quoted_identifier_ignored() -> None:
 
 def test_underscores_and_digits_allowed() -> None:
     assert extract_params("select :p_1, :p2 from t") == ["p_1", "p2"]
+
+
+# -- to_duckdb_placeholders -------------------------------------------------
+
+
+def test_duckdb_rewrite_basic() -> None:
+    assert (
+        to_duckdb_placeholders("select * from t where id = :id")
+        == "select * from t where id = $id"
+    )
+
+
+def test_duckdb_rewrite_multiple_and_repeat() -> None:
+    sql = "select * from t where a = :a and b > :b and a2 = :a"
+    assert (
+        to_duckdb_placeholders(sql)
+        == "select * from t where a = $a and b > $b and a2 = $a"
+    )
+
+
+def test_duckdb_rewrite_leaves_casts_alone() -> None:
+    assert to_duckdb_placeholders("select 1::int as x, :n") == "select 1::int as x, $n"
+
+
+def test_duckdb_rewrite_leaves_string_literals_alone() -> None:
+    sql = "select '12:30' as t, :real_one"
+    assert to_duckdb_placeholders(sql) == "select '12:30' as t, $real_one"
+
+
+def test_duckdb_rewrite_no_params_is_identity() -> None:
+    sql = "select count(*) from t"
+    assert to_duckdb_placeholders(sql) == sql
