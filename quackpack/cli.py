@@ -1,16 +1,18 @@
 """Command-line entry point for quackpack.
 
 Wires the Typer app together. M1 shipped ``--version`` + ``hello``; M2 added the
-catalog CRUD commands (``add`` / ``ls`` / ``show`` / ``rm``). M3 adds ``run`` —
+catalog CRUD commands (``add`` / ``ls`` / ``show`` / ``rm``). M3 added ``run`` —
 executing a stored query against a ``--db``/``--file`` target via DuckDB (with a
-SQLite fallback). Parameter prompting lands in M4.
+SQLite fallback). M4 makes queries reusable: ``--param`` values are type-coerced
+(int/float/str) and any declared ``:param`` you omit is prompted for when
+running interactively, all bound via safe prepared statements.
 """
 
 from __future__ import annotations
 
 import sys
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, List, Optional
 
 import typer
 from rich.console import Console
@@ -19,6 +21,7 @@ from rich.table import Table
 
 from . import __version__
 from .engine import EngineError, available_engines, run_query
+from .params import coerce_value, split_param_key
 from .render import FORMATS, render
 from .store import (
     Catalog,
@@ -123,22 +126,56 @@ def _read_sql(query: Optional[str], file: Optional[Path]) -> str:
 
 
 def _parse_params(pairs: Optional[List[str]]) -> dict:
-    """Parse repeated ``--param key=value`` flags into a dict.
+    """Parse repeated ``--param key=value`` flags into a typed dict.
 
-    Values are kept as strings here; native driver binding handles coercion for
-    the common cases, and rich typing/prompts arrive in M4. A missing ``=`` is a
-    user error rather than a silent no-op.
+    Values are coerced to ``int``/``float``/``str`` (see
+    :func:`quackpack.params.coerce_value`) so numeric filters compare
+    numerically instead of lexically. An optional ``key:type`` annotation forces
+    a specific type, e.g. ``--param n:int=5`` or ``--param zip:str=00501``. A
+    missing ``=`` (or a bad explicit cast) is a user error, not a silent no-op.
     """
-    out: dict[str, str] = {}
+    out: dict[str, Any] = {}
     for item in pairs or []:
         if "=" not in item:
             raise _fail(f"Bad --param {item!r}; expected key=value.")
-        key, _, value = item.partition("=")
-        key = key.strip()
+        raw_key, _, value = item.partition("=")
+        key, type_hint = split_param_key(raw_key)
         if not key:
             raise _fail(f"Bad --param {item!r}; the key is empty.")
-        out[key] = value
+        try:
+            out[key] = coerce_value(value, type_hint)
+        except ValueError:
+            raise _fail(
+                f"Bad --param {item!r}: {value!r} is not a valid {type_hint}."
+            )
     return out
+
+
+def _prompt_for_missing(missing: List[str]) -> dict:
+    """Interactively prompt for each missing param and coerce the answers.
+
+    Each entered value runs through :func:`coerce_value` so ``25`` becomes an
+    ``int`` and ``2.5`` a ``float`` — matching how ``--param`` values are typed.
+    An empty answer is accepted as an empty string (the user can wrap a literal
+    in the query if they need NULL semantics).
+    """
+    out: dict[str, Any] = {}
+    for name in missing:
+        raw = typer.prompt(f"param {name}")
+        out[name] = coerce_value(raw)
+    return out
+
+
+def _stdin_is_interactive() -> bool:
+    """True when we can safely prompt (a real TTY on stdin).
+
+    Factored out so tests can monkeypatch it, and so piped/CI invocations never
+    block waiting on input that will never come.
+    """
+    try:
+        return sys.stdin.isatty()
+    except (ValueError, OSError):  # pragma: no cover - detached stdin
+        return False
 
 
 # --------------------------------------------------------------------------
@@ -283,7 +320,9 @@ def run(
     The query's SQL can reference a ``--file`` by its auto-derived relation name
     (the file's stem, e.g. ``sales.csv`` -> ``sales``) or via DuckDB table
     functions like ``read_csv_auto('sales.csv')``. ``:param`` placeholders are
-    bound from ``--param key=value`` (interactive prompting arrives in M4).
+    bound from ``--param key=value`` (values are typed as int/float/str; add a
+    ``key:type`` hint to force one). Any declared param you don't pass is
+    prompted for interactively when running in a terminal.
     """
     if fmt.lower() not in FORMATS:
         raise _fail(f"Unknown --format {fmt!r}. Choose one of: {', '.join(FORMATS)}.")
@@ -296,14 +335,18 @@ def run(
 
     params = _parse_params(param)
 
-    # Warn (don't block) when the query expects params the caller didn't supply;
-    # the engine will surface a precise binding error if they're truly required.
+    # Reconcile declared params with what was supplied. Anything still missing
+    # is prompted for when we have a real TTY; otherwise (pipes/CI) we warn and
+    # let the engine raise a precise binding error if the param is truly needed.
     missing = [p for p in query.params if p not in params]
     if missing:
-        err_console.print(
-            f"[yellow]warning:[/yellow] no value given for: {', '.join(missing)} "
-            f"(pass --param {missing[0]}=... )"
-        )
+        if _stdin_is_interactive():
+            params.update(_prompt_for_missing(missing))
+        else:
+            err_console.print(
+                f"[yellow]warning:[/yellow] no value given for: {', '.join(missing)} "
+                f"(pass --param {missing[0]}=... )"
+            )
 
     try:
         result = run_query(

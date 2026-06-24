@@ -7,7 +7,7 @@ gnarly one-liner you wrote three weeks ago.
 It's like `tldr`/`navi` cheatsheets, but for *your own* analytical SQL. Your throwaway
 queries become reusable tools without becoming things you have to maintain.
 
-> Status: 🏗️ v0.1 in progress. **M3 (`run` engine — DuckDB + SQLite fallback) is live.**
+> Status: 🏗️ v0.1 in progress. **M4 (`:param` typing + interactive prompts) is live.**
 > See [PLAN.md](./PLAN.md) for the full roadmap.
 
 ## Why
@@ -72,6 +72,16 @@ $ quackpack run top-regions --file sales.parquet --format csv
 $ quackpack add -n big -q "SELECT * FROM sales WHERE amount > :min ORDER BY amount"
 $ quackpack run big --file sales.csv --param min=90 --format json
 
+# Omit a param and quackpack prompts for it (when run in a terminal):
+$ quackpack run big --file sales.csv
+param min: 90
+┏━━━━━━━━┳━━━━━━━━┓
+┃ region ┃ amount ┃
+┡━━━━━━━━╇━━━━━━━━┩
+│ west   │    100 │
+│ east   │    250 │
+└────────┴────────┘
+
 # Query tables inside a database file (DuckDB or SQLite):
 $ quackpack run big --db shop.duckdb --param min=90
 $ quackpack run big --db shop.sqlite --param min=90 --engine sqlite
@@ -84,8 +94,11 @@ Notes:
   `read_parquet('data/*.parquet')`.
 - **`--param key=value`** is repeatable and bound via the driver's native prepared
   statements (no string interpolation). quackpack stores `:name` placeholders and
-  translates them to DuckDB's `$name` automatically. *Interactive prompting for missing
-  params lands in M4* — for now, unbound params just warn.
+  translates them to DuckDB's `$name` automatically. Values are **typed automatically** as
+  `int` / `float` / `str` so numeric filters compare numerically; force a type with a
+  `key:type` hint, e.g. `--param zip:str=00501` (keep the leading zero) or
+  `--param n:int=5`. **Any declared param you don't pass is prompted for interactively**
+  when running in a terminal; in pipes/CI it just warns so nothing hangs.
 - **`--format`**: `table` (default), `csv`, or `json`.
 - **`--engine`**: `auto` (DuckDB if installed, else SQLite), `duckdb`, or `sqlite`. The
   SQLite fallback ingests CSVs (inferring numeric columns) and reads `.sqlite` files;
@@ -107,11 +120,11 @@ queries:
     params: [src, n]
 ```
 
-## Coming next (M4+)
+## Coming next (M5+)
 
-`:param` **binding with interactive prompts** (M4) — quackpack will prompt for any
-placeholder you didn't pass on the command line, with light type coercion. After that:
-fuzzy `search`, `$EDITOR` `edit`, and run history (M5).
+With `:param` typing + prompts done (M4), next up is discovery and recall: fuzzy/substring
+`search`, `$EDITOR` `edit`, and run history powering "last run Nd ago" + run counts (M5),
+then polish and a tagged `v0.1.0` release (M6).
 
 ## Install
 
