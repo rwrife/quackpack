@@ -1,18 +1,31 @@
-"""Parameter placeholder detection for quackpack queries.
+"""Parameter handling for quackpack queries.
 
 A query can embed ``:name`` style placeholders (DuckDB/SQLite prepared-statement
-syntax). This module extracts those placeholder names so the catalog can record
-which params a query expects. Binding/prompting for values lands in M4 — for M2
-we only need to *detect* them at ``add`` time.
+syntax). This module:
 
-Kept dependency-free and pure so it is trivial to test in isolation.
+* **detects** those placeholder names so the catalog can record which params a
+  query expects (used since M2 at ``add`` time), and
+* **coerces** the string values supplied on the CLI (``--param key=value``) into
+  ``int`` / ``float`` / ``str`` so numeric comparisons behave numerically (M4).
+
+Everything here is pure and dependency-free so it is trivial to test in
+isolation; the interactive prompting itself lives in the CLI layer, but the
+value-coercion rules it relies on are defined here.
 """
 
 from __future__ import annotations
 
 import re
+from typing import Any
 
-__all__ = ["extract_params", "to_duckdb_placeholders", "mask_literals"]
+__all__ = [
+    "extract_params",
+    "to_duckdb_placeholders",
+    "mask_literals",
+    "coerce_value",
+    "split_param_key",
+    "PARAM_TYPES",
+]
 
 # A :param is a colon followed by an identifier (letter/underscore, then word
 # chars). We deliberately ignore:
@@ -94,3 +107,94 @@ def to_duckdb_placeholders(sql: str) -> str:
         last = end
     out.append(sql[last:])
     return "".join(out)
+
+
+# --------------------------------------------------------------------------
+# Value coercion (M4)
+# --------------------------------------------------------------------------
+
+# Explicit type annotations a user can attach to a param key, e.g.
+# ``--param n:int=5`` or ``--param ratio:float=0.5``. ``str`` forces the value
+# to stay textual even if it looks numeric (handy for zip codes / ids).
+PARAM_TYPES: dict[str, type] = {"int": int, "float": float, "str": str}
+
+# A param key may carry an optional ``:type`` suffix. We only treat the suffix
+# as a type hint when it's one we recognise; otherwise the whole token is the
+# key (so a column-ish name like ``user:id`` isn't mangled).
+_KEY_TYPE_RE = re.compile(r"^(?P<key>.+?):(?P<type>[A-Za-z]+)$")
+
+# ``float()`` accepts ``inf``/``infinity``/``nan`` (any case, optional sign).
+# We exclude these from *auto* coercion so a literal param value of "nan" stays
+# a string; callers wanting the IEEE value can pass an explicit ``:float`` hint.
+_NON_FINITE_RE = re.compile(r"(?i)^[+-]?(inf(inity)?|nan)$")
+
+
+def split_param_key(raw: str) -> tuple[str, str | None]:
+    """Split a ``--param`` key into ``(name, type_hint)``.
+
+    A trailing ``:int`` / ``:float`` / ``:str`` is interpreted as an explicit
+    coercion hint; anything else leaves the key intact with no hint.
+
+    >>> split_param_key("n")
+    ('n', None)
+    >>> split_param_key("n:int")
+    ('n', 'int')
+    >>> split_param_key("weird:name")
+    ('weird:name', None)
+    """
+    key = raw.strip()
+    m = _KEY_TYPE_RE.match(key)
+    if m and m.group("type").lower() in PARAM_TYPES:
+        return m.group("key").strip(), m.group("type").lower()
+    return key, None
+
+
+def coerce_value(value: Any, type_hint: str | None = None) -> Any:
+    """Coerce a raw CLI string into ``int`` / ``float`` / ``str``.
+
+    With no *type_hint* the value is auto-typed: it becomes an ``int`` if it
+    parses cleanly as one, else a ``float`` if it parses as one, else it stays a
+    ``str``. A *type_hint* of ``"str"`` forces text; ``"int"``/``"float"`` force
+    the numeric type and raise :class:`ValueError` on a bad value so the CLI can
+    report it. Non-string inputs (e.g. an int from an interactive default) pass
+    through untouched aside from explicit hints.
+
+    >>> coerce_value("42")
+    42
+    >>> coerce_value("3.14")
+    3.14
+    >>> coerce_value("west")
+    'west'
+    >>> coerce_value("007", "str")
+    '007'
+    >>> coerce_value("5", "float")
+    5.0
+    """
+    if type_hint is not None:
+        caster = PARAM_TYPES[type_hint]
+        if caster is str:
+            return value if isinstance(value, str) else str(value)
+        # int("3.0") raises, which is the right call for an explicit int hint.
+        return caster(str(value).strip())
+
+    if not isinstance(value, str):
+        return value
+
+    s = value.strip()
+    if s == "":
+        return value
+    # Try int first so whole numbers don't silently become floats.
+    try:
+        return int(s)
+    except ValueError:
+        pass
+    # Auto-typing only promotes ordinary decimal floats. The special spellings
+    # ``inf`` / ``nan`` that ``float()`` accepts almost always mean the *literal
+    # string* when typed as a param, so we leave them as text (an explicit
+    # ``:float`` hint can still force the IEEE value).
+    if _NON_FINITE_RE.search(s):
+        return value
+    try:
+        return float(s)
+    except ValueError:
+        return value

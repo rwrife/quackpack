@@ -17,8 +17,8 @@ Two engines are supported:
 
 Parameter binding uses each driver's native ``:name`` prepared-statement
 support, so values are never string-interpolated into SQL (no injection, correct
-typing). Detecting/prompting for params is M4's job; here we simply bind what we
-are handed.
+typing). Detecting params (``params.py``) and prompting/coercing them (the CLI)
+happen upstream; here we simply bind the mapping we are handed.
 
 Everything user-facing failure-wise is funneled through :class:`EngineError`
 with a short, actionable message so the CLI can print it cleanly.
