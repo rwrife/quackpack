@@ -5,12 +5,18 @@ catalog CRUD commands (``add`` / ``ls`` / ``show`` / ``rm``). M3 added ``run`` �
 executing a stored query against a ``--db``/``--file`` target via DuckDB (with a
 SQLite fallback). M4 makes queries reusable: ``--param`` values are type-coerced
 (int/float/str) and any declared ``:param`` you omit is prompted for when
-running interactively, all bound via safe prepared statements.
+running interactively, all bound via safe prepared statements. M5 rounds out
+the library workflow: ``search`` finds a query by any field, ``edit`` opens it
+in ``$EDITOR`` (re-parsing ``:params`` on save), and every ``run`` records run
+history so ``ls``/``show`` surface "last run Nd ago" and the last outcome.
 """
 
 from __future__ import annotations
 
+import os
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any, List, Optional
 
@@ -21,7 +27,8 @@ from rich.table import Table
 
 from . import __version__
 from .engine import EngineError, available_engines, run_query
-from .params import coerce_value, split_param_key
+from .history import ERROR, OK, describe_last_run
+from .params import coerce_value, extract_params, split_param_key
 from .render import FORMATS, render
 from .store import (
     Catalog,
@@ -178,6 +185,52 @@ def _stdin_is_interactive() -> bool:
         return False
 
 
+def _resolve_editor(explicit: Optional[str]) -> str:
+    """Pick the editor command: ``--editor`` > ``$VISUAL`` > ``$EDITOR`` > default.
+
+    Falls back to ``vi`` on POSIX and ``notepad`` on Windows so ``edit`` works
+    even on a bare environment. Kept tiny and pure for easy testing.
+    """
+    if explicit:
+        return explicit
+    for var in ("VISUAL", "EDITOR"):
+        val = os.environ.get(var)
+        if val:
+            return val
+    return "notepad" if os.name == "nt" else "vi"
+
+
+def _edit_text(initial: str, *, editor: Optional[str] = None, suffix: str = ".sql") -> Optional[str]:
+    """Open *initial* in an editor and return the edited text (or ``None``).
+
+    Writes *initial* to a temp file, launches the resolved editor on it, then
+    reads it back. Returns ``None`` when the editor can't be launched or the
+    content is byte-for-byte unchanged, signalling "no edit" to the caller.
+    This is the one impure seam in ``edit``; tests monkeypatch it so they never
+    spawn a real editor.
+    """
+    cmd = _resolve_editor(editor)
+    fd, name = tempfile.mkstemp(suffix=suffix, prefix="quackpack-")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(initial)
+        before = Path(name).read_text(encoding="utf-8")
+        try:
+            # ``shell=True`` so EDITOR values with args (e.g. "code --wait") work.
+            subprocess.run(f'{cmd} "{name}"', shell=True, check=True)
+        except (OSError, subprocess.CalledProcessError) as exc:
+            raise _fail(f"Could not launch editor {cmd!r}: {exc}")
+        after = Path(name).read_text(encoding="utf-8")
+        if after == before:
+            return None
+        return after
+    finally:
+        try:
+            os.unlink(name)
+        except OSError:  # pragma: no cover - temp cleanup best-effort
+            pass
+
+
 # --------------------------------------------------------------------------
 # Commands: add / ls / show / run / rm
 # --------------------------------------------------------------------------
@@ -247,12 +300,14 @@ def ls(
     table.add_column("name", style="bold cyan", no_wrap=True)
     table.add_column("tags", style="magenta")
     table.add_column("params", style="yellow")
+    table.add_column("last run", style="green", no_wrap=True)
     table.add_column("description")
     for q in rows:
         table.add_row(
             q.name,
             ", ".join(q.tags),
             ", ".join(q.params),
+            describe_last_run(q.last_run, q.last_status),
             q.desc,
         )
     console.print(table)
@@ -279,9 +334,99 @@ def show(
         meta.append(f"params: {', '.join(q.params)}")
     if q.created:
         meta.append(f"created: {q.created}")
+    meta.append(f"runs: {q.run_count}")
+    meta.append(f"last run: {describe_last_run(q.last_run, q.last_status)}")
     if meta:
         console.print("[dim]" + "  |  ".join(meta) + "[/dim]")
     console.print(Syntax(q.sql, "sql", theme="ansi_dark", word_wrap=True))
+
+
+@app.command()
+def search(
+    text: str = typer.Argument(
+        ..., help="Text to match against name, SQL, description, and tags."
+    ),
+) -> None:
+    """Find saved queries by substring (case-insensitive) across all fields.
+
+    Matches the same fields as the catalog's search — name, SQL body,
+    description, and tags — so you can recall a query by *anything* you remember
+    about it ("that one with the window function" → ``quackpack search window``).
+    Results render like ``ls`` so you immediately see tags, params, and recency.
+    """
+    catalog = _load()
+    rows = catalog.search(text)
+    if not rows:
+        console.print(f"No queries matching [bold]{text}[/bold].")
+        return
+
+    table = Table(title=None, header_style="bold", show_lines=False)
+    table.add_column("name", style="bold cyan", no_wrap=True)
+    table.add_column("tags", style="magenta")
+    table.add_column("params", style="yellow")
+    table.add_column("last run", style="green", no_wrap=True)
+    table.add_column("description")
+    for q in rows:
+        table.add_row(
+            q.name,
+            ", ".join(q.tags),
+            ", ".join(q.params),
+            describe_last_run(q.last_run, q.last_status),
+            q.desc,
+        )
+    console.print(table)
+    plural = "match" if len(rows) == 1 else "matches"
+    console.print(f"[dim]{len(rows)} {plural}[/dim]")
+
+
+@app.command()
+def edit(
+    name: str = typer.Argument(..., help="Name of the query to edit."),
+    editor: Optional[str] = typer.Option(
+        None,
+        "--editor",
+        help="Editor command to use (defaults to $VISUAL/$EDITOR, then a sane default).",
+    ),
+) -> None:
+    """Open a saved query's SQL in ``$EDITOR`` and save the edited version.
+
+    Launches your editor (``--editor``, else ``$VISUAL``/``$EDITOR``) on the
+    query's current SQL. On save, the new text replaces the stored SQL and the
+    ``:param`` list is re-derived, so adding or removing a placeholder is picked
+    up automatically. Leaving the text unchanged (or emptying it) is a no-op —
+    the catalog is left untouched.
+    """
+    catalog = _load()
+    try:
+        q = catalog.get(name)
+    except QueryNotFoundError as exc:
+        raise _fail(str(exc))
+
+    edited = _edit_text(q.sql, editor=editor)
+    if edited is None:
+        # Editor exited without changes (or isn't available).
+        console.print("[dim]no changes — left as-is.[/dim]")
+        raise typer.Exit()
+
+    new_sql = edited.strip()
+    if not new_sql:
+        raise _fail("The edited query is empty; nothing saved.")
+    if new_sql == q.sql:
+        console.print("[dim]no changes — left as-is.[/dim]")
+        raise typer.Exit()
+
+    old_params = list(q.params)
+    q.sql = new_sql
+    q.params = extract_params(new_sql)  # re-parse on save
+    try:
+        catalog.update(q)
+    except CatalogError as exc:
+        raise _fail(str(exc))
+
+    bits = [f"[green]updated[/green] [bold cyan]{q.name}[/bold cyan]"]
+    if q.params != old_params:
+        bits.append(f"params: {', '.join(q.params) or '(none)'}")
+    console.print("  ".join(bits))
 
 
 @app.command()
@@ -357,7 +502,18 @@ def run(
             engine=engine,
         )
     except EngineError as exc:
+        # Record the failed attempt so history reflects reality, then surface
+        # the error. Persisting must never mask the original failure.
+        try:
+            catalog.record_run(query.name, ERROR)
+        except CatalogError:  # pragma: no cover - best-effort bookkeeping
+            pass
         raise _fail(str(exc))
+
+    try:
+        catalog.record_run(query.name, OK)
+    except CatalogError:  # pragma: no cover - best-effort bookkeeping
+        pass
 
     render(result, fmt, console)
 

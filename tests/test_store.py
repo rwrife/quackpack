@@ -131,3 +131,90 @@ def test_malformed_catalog_raises(home: Path) -> None:
     catalog_path().write_text("- just\n- a list\n", encoding="utf-8")
     with pytest.raises(CatalogError):
         Catalog.load()
+
+
+# --------------------------------------------------------------------------
+# M5: run history + update (edit backing)
+# --------------------------------------------------------------------------
+
+
+def test_query_history_defaults_and_roundtrip(home: Path) -> None:
+    cat = Catalog.load()
+    cat.add(Query(name="h", sql="select 1"))
+    q = Catalog.load().get("h")
+    # Fresh query: never run.
+    assert q.run_count == 0
+    assert q.last_run == ""
+    assert q.last_status == ""
+
+
+def test_record_run_bumps_and_persists(home: Path) -> None:
+    cat = Catalog.load()
+    cat.add(Query(name="h", sql="select 1"))
+
+    cat.record_run("h", "ok")
+    cat.record_run("h", "error")
+
+    # Survives reload.
+    q = Catalog.load().get("h")
+    assert q.run_count == 2
+    assert q.last_status == "error"
+    assert q.last_run  # timestamp set
+
+
+def test_record_run_missing_raises(home: Path) -> None:
+    with pytest.raises(QueryNotFoundError):
+        Catalog.load().record_run("nope")
+
+
+def test_record_run_in_place_query_mutates() -> None:
+    q = Query(name="h", sql="select 1")
+    q.record_run("ok", when="2026-06-25T12:00:00+00:00")
+    assert q.run_count == 1
+    assert q.last_run == "2026-06-25T12:00:00+00:00"
+    assert q.last_status == "ok"
+
+
+def test_garbled_history_fields_tolerated(home: Path) -> None:
+    # A hand-edited catalog with junk in the history fields should load cleanly,
+    # coercing run_count to a sane non-negative int and blanking the rest.
+    catalog_path().parent.mkdir(parents=True, exist_ok=True)
+    catalog_path().write_text(
+        "version: 1\n"
+        "queries:\n"
+        "  - name: h\n"
+        "    sql: select 1\n"
+        "    run_count: not-a-number\n"
+        "    last_run: null\n",
+        encoding="utf-8",
+    )
+    q = Catalog.load().get("h")
+    assert q.run_count == 0
+    assert q.last_run == ""
+    assert q.last_status == ""
+
+
+def test_update_replaces_in_place_preserving_order(home: Path) -> None:
+    cat = Catalog.load()
+    cat.add(Query(name="a", sql="select 1"))
+    cat.add(Query(name="b", sql="select 2"))
+
+    cat.update(Query(name="a", sql="select 999 where x = :x"))
+
+    again = Catalog.load()
+    assert again.names() == ["a", "b"]  # order kept
+    a = again.get("a")
+    assert a.sql == "select 999 where x = :x"
+    assert a.params == ["x"]  # re-derived from new SQL
+
+
+def test_update_missing_raises(home: Path) -> None:
+    with pytest.raises(QueryNotFoundError):
+        Catalog.load().update(Query(name="ghost", sql="select 1"))
+
+
+def test_update_rejects_empty(home: Path) -> None:
+    cat = Catalog.load()
+    cat.add(Query(name="a", sql="select 1"))
+    with pytest.raises(CatalogError):
+        cat.update(Query(name="", sql="select 1"))

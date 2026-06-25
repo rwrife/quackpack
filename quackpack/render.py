@@ -6,8 +6,7 @@ Turns an :class:`~quackpack.engine.QueryResult` into output the user asked for:
 * ``csv`` — RFC-4180-ish CSV, perfect for piping into another tool.
 * ``json`` — a JSON array of row objects (column-keyed), for scripts/jq.
 
-Kept separate from the engine so output strategy and execution stay decoupled
-(M5 will add more knobs here without touching the engine).
+Kept separate from the engine so output strategy and execution stay decoupled.
 """
 
 from __future__ import annotations
