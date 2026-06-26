@@ -1,0 +1,16 @@
+order_date,region,product,units,amount
+2026-01-04,west,widget,3,150
+2026-01-11,east,widget,1,50
+2026-01-18,west,gadget,2,240
+2026-02-02,east,gadget,5,600
+2026-02-09,north,widget,4,200
+2026-02-15,west,sprocket,1,35
+2026-03-01,east,sprocket,7,245
+2026-03-08,north,gadget,3,360
+2026-03-22,west,widget,6,300
+2026-04-05,south,gadget,2,240
+2026-04-12,south,widget,9,450
+2026-04-19,north,sprocket,4,140
+2026-05-03,east,widget,2,100
+2026-05-17,west,gadget,1,120
+2026-05-31,south,sprocket,8,280
