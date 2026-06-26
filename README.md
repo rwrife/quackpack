@@ -7,7 +7,7 @@ gnarly one-liner you wrote three weeks ago.
 It's like `tldr`/`navi` cheatsheets, but for *your own* analytical SQL. Your throwaway
 queries become reusable tools without becoming things you have to maintain.
 
-> Status: 🏗️ v0.1 in progress. **M4 (`:param` typing + interactive prompts) is live.**
+> Status: 🏗️ v0.1 in progress. **M5 (`search`, `edit`, and run history) is live.**
 > See [PLAN.md](./PLAN.md) for the full roadmap.
 
 ## Why
@@ -31,19 +31,45 @@ $ cat report.sql | quackpack add --name monthly-revenue --tags finance
 $ quackpack add --name quick -f ./queries/quick.sql
 ```
 
-List, filter, inspect, and remove:
+List, filter, inspect, and remove. `ls` shows when each query was **last run** (with an
+`(error)` flag if the last run failed):
 
 ```console
 $ quackpack ls
-┏━━━━━━━━━━━━┳━━━━━━━━━━━━━━┳━━━━━━━━┳━━━━━━━━━━━━┓
-┃ name       ┃ tags         ┃ params ┃ description┃
-┡━━━━━━━━━━━━╇━━━━━━━━━━━━━━╇━━━━━━━━╇━━━━━━━━━━━━┩
-│ top-errors │ logs, triage │ src, n │ 5xx by path│
-└────────────┴──────────────┴────────┴────────────┘
+┏━━━━━━━━━━━━┳━━━━━━━━━━━━━━┳━━━━━━━━┳━━━━━━━━━━┳━━━━━━━━━━━━┓
+┃ name       ┃ tags         ┃ params ┃ last run ┃ description┃
+┡━━━━━━━━━━━━╇━━━━━━━━━━━━━━╇━━━━━━━━╇━━━━━━━━━━╇━━━━━━━━━━━━┩
+│ top-errors │ logs, triage │ src, n │ 2d ago   │ 5xx by path│
+└────────────┴──────────────┴────────┴──────────┴────────────┘
 
 $ quackpack ls --tag finance          # filter by tag
-$ quackpack show top-errors           # SQL + metadata (syntax-highlighted)
+$ quackpack show top-errors           # SQL + metadata + run history (highlighted)
 $ quackpack rm top-errors --yes       # remove (omit --yes to confirm)
+```
+
+### Find & edit
+
+As your pack grows, `search` recalls a query by *anything* you remember about it — it
+substring-matches (case-insensitively) across name, SQL body, description, and tags:
+
+```console
+$ quackpack search 5xx           # matches the description
+$ quackpack search read_parquet  # matches the SQL body
+$ quackpack search triage        # matches a tag
+┏━━━━━━━━━━━━┳━━━━━━━━━━━━━━┳━━━━━━━━┳━━━━━━━━━━┳━━━━━━━━━━━━┓
+┃ name       ┃ tags         ┃ params ┃ last run ┃ description┃
+┡━━━━━━━━━━━━╇━━━━━━━━━━━━━━╇━━━━━━━━╇━━━━━━━━━━╇━━━━━━━━━━━━┩
+│ top-errors │ logs, triage │ src, n │ 2d ago   │ 5xx by path│
+└────────────┴──────────────┴────────┴──────────┴────────────┘
+1 match
+```
+
+Tweak a stored query in your editor — quackpack opens the SQL in `$EDITOR` (or `--editor`)
+and **re-detects `:params` on save**, so adding or removing a placeholder just works:
+
+```console
+$ quackpack edit top-errors       # opens $VISUAL / $EDITOR (vi by default)
+updated top-errors  params: src, n, since
 ```
 
 ### Run a query
@@ -118,13 +144,19 @@ queries:
     desc: 5xx by path
     created: "2026-06-22T19:44:07+00:00"
     params: [src, n]
+    run_count: 4
+    last_run: "2026-06-25T19:40:00+00:00"
+    last_status: ok
 ```
 
-## Coming next (M5+)
+Every `quackpack run` bumps `run_count` / `last_run` / `last_status`, which is what powers
+the "last run" column in `ls` and the run summary in `show`.
 
-With `:param` typing + prompts done (M4), next up is discovery and recall: fuzzy/substring
-`search`, `$EDITOR` `edit`, and run history powering "last run Nd ago" + run counts (M5),
-then polish and a tagged `v0.1.0` release (M6).
+## Coming next (M6)
+
+Discovery and recall are done (M5: `search`, `edit`, run history). Last up for v0.1 is
+**M6 — polish + ship**: an asciinema/GIF demo, `pipx`/`uv` install docs, examples, and a
+tagged `v0.1.0` release.
 
 ## Install
 

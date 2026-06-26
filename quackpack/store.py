@@ -22,6 +22,9 @@ File shape
         desc: Biggest spenders in a CSV.
         created: "2026-06-22T19:40:00+00:00"
         params: [file, n]
+        run_count: 3
+        last_run: "2026-06-25T19:40:00+00:00"
+        last_status: ok
 """
 
 from __future__ import annotations
@@ -34,6 +37,7 @@ from typing import Iterable, Iterator, Optional
 
 import yaml
 
+from .history import OK, now_iso
 from .params import extract_params
 
 __all__ = [
@@ -79,6 +83,15 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
 
+def _coerce_int(value: object) -> int:
+    """Best-effort int from a loaded YAML field (tolerant of bad hand edits)."""
+    try:
+        n = int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return 0
+    return n if n > 0 else 0
+
+
 @dataclass
 class Query:
     """A single saved query and its metadata.
@@ -93,6 +106,9 @@ class Query:
     desc: str = ""
     created: str = field(default_factory=_now_iso)
     params: list[str] = field(default_factory=list)
+    run_count: int = 0
+    last_run: str = ""
+    last_status: str = ""
 
     def __post_init__(self) -> None:
         self.name = self.name.strip()
@@ -107,6 +123,21 @@ class Query:
         self.desc = (self.desc or "").strip()
         if not self.params:
             self.params = extract_params(self.sql)
+        # History fields are tolerant of absent/garbled values on load.
+        self.run_count = _coerce_int(self.run_count)
+        self.last_run = (self.last_run or "").strip()
+        self.last_status = (self.last_status or "").strip()
+
+    def record_run(self, status: str = OK, *, when: Optional[str] = None) -> None:
+        """Mutate this query in place to reflect one more run with *status*.
+
+        Bumps :attr:`run_count` and refreshes :attr:`last_run` /
+        :attr:`last_status`. Persisting is the caller's job (see
+        :meth:`Catalog.record_run`).
+        """
+        self.run_count += 1
+        self.last_run = when or now_iso()
+        self.last_status = status
 
     def to_dict(self) -> dict:
         """Serialise to a plain dict suitable for YAML dumping."""
@@ -122,6 +153,9 @@ class Query:
             desc=data.get("desc", "") or "",
             created=data.get("created") or _now_iso(),
             params=list(data.get("params") or []),
+            run_count=data.get("run_count", 0),
+            last_run=data.get("last_run", "") or "",
+            last_status=data.get("last_status", "") or "",
         )
 
 
@@ -245,3 +279,37 @@ class Catalog:
                     self.save()
                 return removed
         raise QueryNotFoundError(f"No query named {name!r}.")
+
+    def update(self, query: Query, *, save: bool = True) -> Query:
+        """Replace an existing query (matched by name) in place.
+
+        Unlike :meth:`add`, this requires the name to already exist (it's the
+        backing operation for ``edit``). Position in the catalog is preserved so
+        an edit never reshuffles the file.
+        """
+        if not query.name:
+            raise CatalogError("Query name must not be empty.")
+        if not query.sql:
+            raise CatalogError("Query SQL must not be empty.")
+        for i, q in enumerate(self._queries):
+            if q.name == query.name:
+                self._queries[i] = query
+                if save:
+                    self.save()
+                return query
+        raise QueryNotFoundError(f"No query named {query.name!r}.")
+
+    def record_run(self, name: str, status: str = OK, *, save: bool = True) -> Query:
+        """Bump run history for the query named *name* and persist it.
+
+        Records one execution (incrementing ``run_count`` and refreshing
+        ``last_run`` / ``last_status``). Called by the ``run`` command after an
+        execution completes — successfully or not — so ``ls`` can show recency
+        and the last outcome. Raises :class:`QueryNotFoundError` if the query
+        vanished between fetch and record.
+        """
+        q = self.get(name)
+        q.record_run(status)
+        if save:
+            self.save()
+        return q
