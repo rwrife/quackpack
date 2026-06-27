@@ -164,6 +164,43 @@ Notes:
   SQLite fallback ingests CSVs (inferring numeric columns) and reads `.sqlite` files;
   Parquet requires DuckDB.
 
+### Stash on the fly (`pipe`)
+
+Got a throwaway query you might want to keep? `quackpack pipe` runs SQL straight from
+stdin (or `-q` / `--sql-file`) — **no `add` first** — then offers to stash it. It takes the
+same execution flags as `run` (`--file` / `--db`, `--param`, `--format`, `--engine`).
+
+```console
+# Pipe a query in, see the result, then decide:
+$ echo "SELECT region, sum(amount) AS total FROM sales GROUP BY 1 ORDER BY total DESC" \
+    | quackpack pipe --file sales.csv
+┏━━━━━━━━┳━━━━━━━┓
+┃ region ┃ total ┃
+┡━━━━━━━━╇━━━━━━━┩
+│ east   │   250 │
+│ west   │   175 │
+└────────┴───────┘
+2 rows
+stash as [name] (blank to skip): top-regions
+stashed top-regions
+
+# One-shot, scriptable stash (no prompt):
+$ echo "SELECT count(*) AS n FROM sales" \
+    | quackpack pipe --file sales.csv --save-as rowcount --tags adhoc
+
+# Just run it, never ask:
+$ cat scratch.sql | quackpack pipe --file sales.csv --no-save
+```
+
+Notes:
+
+- **Interactive prompt** only appears at a real terminal; a blank name skips saving. When
+  SQL is piped on stdin there's no TTY to prompt on, so use `--save-as NAME` to keep it.
+- **The nudge.** quackpack remembers your recent pipes (in `~/.quackpack/pipes.json`,
+  fingerprinted so formatting differences don't matter). Pipe the *same* query again and it
+  flags how many times you've run it — *"you've piped this 3× — worth stashing?"*.
+- Saved queries get their `:param` placeholders detected automatically, exactly like `add`.
+
 ### Where queries live
 
 A single human-readable, diffable YAML file at `~/.quackpack/pack.yaml`. Set
