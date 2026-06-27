@@ -7,7 +7,8 @@ gnarly one-liner you wrote three weeks ago.
 It's like `tldr`/`navi` cheatsheets, but for *your own* analytical SQL. Your throwaway
 queries become reusable tools without becoming things you have to maintain.
 
-> Status: 🏗️ v0.1 in progress. **M5 (`search`, `edit`, and run history) is live.**
+> Status: 🏗️ v0.1 nearly done. **M5 (`search`, `edit`, run history) is live**, and
+> there's now a bundled [`examples/`](./examples) quickstart you can run in ~2 minutes.
 > See [PLAN.md](./PLAN.md) for the full roadmap.
 
 ## Why
@@ -16,6 +17,39 @@ DuckDB is the daily driver for slicing CSV/Parquet/SQLite — and every power us
 with a graveyard of great one-off queries lost in shell history and scratch files. The
 engine is solved; the *workflow around it* is still messy. quackpack is the missing,
 local-first, zero-server bit: **save the query, rerun the query.**
+
+## Quickstart (≈2 minutes)
+
+The repo ships a tiny sample dataset and three starter queries in
+[`examples/`](./examples). From the repo root:
+
+```console
+# Use a throwaway pack so this never touches your real one:
+$ export QUACKPACK_HOME="$(mktemp -d)"
+
+# Stash the three starter queries (or load them all at once with
+# `export QUACKPACK_HOME="$PWD/examples"` to use the bundled pack):
+$ quackpack add -n top-regions -f examples/top-regions.sql --tags demo --desc "Revenue by region"
+$ quackpack add -n big-orders  -f examples/big-orders.sql  --tags demo --desc "Orders at or above :min"
+$ quackpack add -n product-mix -f examples/product-mix.sql --tags demo --desc "Units + revenue share by product"
+
+# Run one against the sample CSV (the relation name is the file stem, `sales`):
+$ quackpack run top-regions --file examples/sales.csv
+┏━━━━━━━━┳━━━━━━━━━┳━━━━━━━┓
+┃ region ┃ revenue ┃ units ┃
+┡━━━━━━━━╇━━━━━━━━━╇━━━━━━━┩
+│ east   │ 995     │ 15    │
+│ south  │ 970     │ 19    │
+│ west   │ 845     │ 13    │
+│ north  │ 700     │ 11    │
+└────────┴─────────┴───────┘
+4 rows
+
+# Bind a :param (or omit it to be prompted):
+$ quackpack run big-orders --file examples/sales.csv --param min=300
+```
+
+More in [`examples/README.md`](./examples/README.md).
 
 ## Usage (available now)
 
@@ -152,19 +186,33 @@ queries:
 Every `quackpack run` bumps `run_count` / `last_run` / `last_status`, which is what powers
 the "last run" column in `ls` and the run summary in `show`.
 
-## Coming next (M6)
+## Coming next (finishing M6)
 
-Discovery and recall are done (M5: `search`, `edit`, run history). Last up for v0.1 is
-**M6 — polish + ship**: an asciinema/GIF demo, `pipx`/`uv` install docs, examples, and a
-tagged `v0.1.0` release.
+Discovery and recall are done (M5: `search`, `edit`, run history) and the
+[`examples/`](./examples) quickstart has landed. Remaining for the v0.1 ship:
+an asciinema/GIF demo and a tagged `v0.1.0` release (optionally on PyPI).
 
 ## Install
 
-> Not published yet. Once v0.1 lands:
->
-> ```console
-> pipx install quackpack    # or: uv tool install quackpack
-> ```
+From source today (PyPI publish lands with `v0.1.0`):
+
+```console
+# With uv (recommended):
+uv tool install git+https://github.com/rwrife/quackpack
+
+# Or with pipx:
+pipx install git+https://github.com/rwrife/quackpack
+
+# Or a plain editable dev install:
+git clone https://github.com/rwrife/quackpack && cd quackpack
+pip install -e ".[dev]"
+```
+
+Once v0.1 is published:
+
+```console
+pipx install quackpack    # or: uv tool install quackpack
+```
 
 ## Tech
 

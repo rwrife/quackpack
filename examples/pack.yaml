@@ -1,0 +1,42 @@
+version: 1
+queries:
+- name: top-regions
+  sql: "-- top-regions: total revenue by region, biggest first.\n-- Run it:  quackpack run top-regions\
+    \ --file examples/sales.csv\nSELECT region,\n       sum(amount) AS revenue,\n       sum(units)  AS\
+    \ units\nFROM sales\nGROUP BY region\nORDER BY revenue DESC;"
+  tags:
+  - demo
+  desc: Revenue by region
+  created: '2026-06-26T00:00:00+00:00'
+  params: []
+  run_count: 0
+  last_run: ''
+  last_status: ''
+- name: big-orders
+  sql: "-- big-orders: every order at or above a revenue floor you pass in.\n-- The :min placeholder is\
+    \ bound at run time (and prompted for if omitted).\n-- Run it:  quackpack run big-orders --file examples/sales.csv\
+    \ --param min=300\nSELECT order_date,\n       region,\n       product,\n       amount\nFROM sales\n\
+    WHERE amount >= :min\nORDER BY amount DESC;"
+  tags:
+  - demo
+  desc: Orders at or above :min
+  created: '2026-06-26T00:00:00+00:00'
+  params:
+  - min
+  run_count: 1
+  last_run: '2026-06-26T19:42:45+00:00'
+  last_status: ok
+- name: product-mix
+  sql: "-- product-mix: units and revenue per product, with a running revenue share.\n-- A slightly meatier\
+    \ query to show quackpack happily stores real SQL.\n-- Run it:  quackpack run product-mix --file examples/sales.csv\n\
+    SELECT product,\n       sum(units)                                   AS units,\n       sum(amount)\
+    \                                  AS revenue,\n       round(100.0 * sum(amount)\n             / sum(sum(amount))\
+    \ OVER (), 1)         AS pct_of_revenue\nFROM sales\nGROUP BY product\nORDER BY revenue DESC;"
+  tags:
+  - demo
+  desc: Units + revenue share by product
+  created: '2026-06-26T00:00:00+00:00'
+  params: []
+  run_count: 0
+  last_run: ''
+  last_status: ''
