@@ -9,6 +9,9 @@ running interactively, all bound via safe prepared statements. M5 rounds out
 the library workflow: ``search`` finds a query by any field, ``edit`` opens it
 in ``$EDITOR`` (re-parsing ``:params`` on save), and every ``run`` records run
 history so ``ls``/``show`` surface "last run Nd ago" and the last outcome.
+Beyond the milestones, ``pipe`` (backlog #7) closes the capture loop: run a
+throwaway query from stdin and then *offer to stash it* — nudging harder when
+you've piped the same SQL before.
 """
 
 from __future__ import annotations
@@ -29,6 +32,7 @@ from . import __version__
 from .engine import EngineError, available_engines, run_query
 from .history import ERROR, OK, describe_last_run
 from .params import coerce_value, extract_params, split_param_key
+from .pipes import PipeLog
 from .render import FORMATS, render
 from .store import (
     Catalog,
@@ -171,6 +175,27 @@ def _prompt_for_missing(missing: List[str]) -> dict:
         raw = typer.prompt(f"param {name}")
         out[name] = coerce_value(raw)
     return out
+
+
+def _resolve_params(declared: List[str], supplied: Optional[List[str]]) -> dict:
+    """Merge ``--param`` flags with declared ``:param`` names, prompting for gaps.
+
+    Parses the supplied ``key=value`` flags, then for any declared placeholder
+    still missing either prompts (real TTY) or warns and lets the engine raise a
+    precise binding error (pipes/CI). Shared by ``run`` and ``pipe`` so both
+    treat parameters identically.
+    """
+    params = _parse_params(supplied)
+    missing = [p for p in declared if p not in params]
+    if missing:
+        if _stdin_is_interactive():
+            params.update(_prompt_for_missing(missing))
+        else:
+            err_console.print(
+                f"[yellow]warning:[/yellow] no value given for: {', '.join(missing)} "
+                f"(pass --param {missing[0]}=... )"
+            )
+    return params
 
 
 def _stdin_is_interactive() -> bool:
@@ -478,20 +503,10 @@ def run(
     except QueryNotFoundError as exc:
         raise _fail(str(exc))
 
-    params = _parse_params(param)
-
     # Reconcile declared params with what was supplied. Anything still missing
     # is prompted for when we have a real TTY; otherwise (pipes/CI) we warn and
     # let the engine raise a precise binding error if the param is truly needed.
-    missing = [p for p in query.params if p not in params]
-    if missing:
-        if _stdin_is_interactive():
-            params.update(_prompt_for_missing(missing))
-        else:
-            err_console.print(
-                f"[yellow]warning:[/yellow] no value given for: {', '.join(missing)} "
-                f"(pass --param {missing[0]}=... )"
-            )
+    params = _resolve_params(query.params, param)
 
     try:
         result = run_query(
@@ -516,6 +531,176 @@ def run(
         pass
 
     render(result, fmt, console)
+
+
+@app.command()
+def pipe(
+    query: Optional[str] = typer.Option(
+        None, "--query", "-q", help="The SQL to run (inline); defaults to stdin."
+    ),
+    file_sql: Optional[Path] = typer.Option(
+        None,
+        "--sql-file",
+        help="Read the SQL from a file instead of stdin.",
+        exists=False,
+    ),
+    db: Optional[Path] = typer.Option(
+        None, "--db", help="Database file to query (DuckDB or SQLite)."
+    ),
+    file: Optional[Path] = typer.Option(
+        None,
+        "--file",
+        "-f",
+        help="Data file to expose to the query (CSV / Parquet / SQLite).",
+    ),
+    param: Optional[List[str]] = typer.Option(
+        None,
+        "--param",
+        "-p",
+        help="Bind a :param as key=value (repeatable).",
+    ),
+    fmt: str = typer.Option(
+        "table",
+        "--format",
+        "-F",
+        help=f"Output format: {', '.join(FORMATS)}.",
+    ),
+    engine: str = typer.Option(
+        "auto",
+        "--engine",
+        "-e",
+        help="Execution engine: auto, duckdb, or sqlite.",
+    ),
+    save_as: Optional[str] = typer.Option(
+        None,
+        "--save-as",
+        "-s",
+        help="Stash the query under this name after running (no prompt).",
+    ),
+    tags: Optional[str] = typer.Option(
+        None, "--tags", "-t", help="Tags to attach when saving (comma-separated)."
+    ),
+    desc: Optional[str] = typer.Option(
+        None, "--desc", "-d", help="Description to attach when saving."
+    ),
+    no_save: bool = typer.Option(
+        False,
+        "--no-save",
+        help="Run only — never prompt to stash (good for scripts).",
+    ),
+) -> None:
+    """Run an ad-hoc query from stdin, then offer to stash it if it's a keeper.
+
+    The fast path is a pipe: ``echo "select ..." | quackpack pipe --file data.csv``
+    runs the SQL immediately — no ``add`` first. Afterwards, if you're at a
+    terminal, ``pipe`` asks whether to save it under a name (and nudges harder
+    when you've piped the *same* query before). Non-interactively, pass
+    ``--save-as NAME`` to stash in one shot, or ``--no-save`` to never be asked.
+
+    Everything about execution — ``--file``/``--db`` targets, ``:param`` binding,
+    ``--format``, ``--engine`` — matches ``run``; ``pipe`` just sources the SQL
+    from stdin/``-q``/``--sql-file`` instead of a saved name.
+    """
+    if fmt.lower() not in FORMATS:
+        raise _fail(f"Unknown --format {fmt!r}. Choose one of: {', '.join(FORMATS)}.")
+
+    sql = _read_sql(query, file_sql)
+    params = _resolve_params(extract_params(sql), param)
+
+    try:
+        result = run_query(sql, db=db, file=file, params=params, engine=engine)
+    except EngineError as exc:
+        raise _fail(str(exc))
+
+    render(result, fmt, console)
+
+    # Remember this pipe so future runs of the same query can nudge harder. This
+    # is best-effort UX: a logging hiccup must never sink a successful run.
+    seen_before = 0
+    try:
+        log = PipeLog.load()
+        seen_before = log.count_for(sql)  # times piped *before* this run
+        log.record(sql)
+        log.save()
+    except OSError:  # pragma: no cover - sidecar is best-effort
+        pass
+
+    _maybe_stash(sql, save_as=save_as, tags=tags, desc=desc, no_save=no_save, seen_before=seen_before)
+
+
+def _maybe_stash(
+    sql: str,
+    *,
+    save_as: Optional[str],
+    tags: Optional[str],
+    desc: Optional[str],
+    no_save: bool,
+    seen_before: int,
+) -> None:
+    """Save *sql* to the catalog, by flag or interactive prompt.
+
+    Decision order:
+
+    * ``--no-save`` → do nothing (but still hint how to stash if it's a repeat).
+    * ``--save-as NAME`` → stash immediately under NAME (non-interactive path).
+    * a real TTY → prompt for a name (blank skips); a query piped before makes
+      the prompt a stronger nudge.
+    * otherwise (piped/CI, no flag) → print a one-line hint and move on, so the
+      run never blocks waiting on input that can't arrive.
+    """
+    if no_save:
+        if seen_before:
+            console.print(
+                f"[dim]tip: you've piped this {seen_before + 1}× — "
+                f"stash it with [bold]--save-as NAME[/bold].[/dim]"
+            )
+        return
+
+    name: Optional[str] = None
+    if save_as is not None:
+        name = save_as.strip()
+        if not name:
+            raise _fail("--save-as needs a non-empty name.")
+    elif _stdin_is_interactive():
+        if seen_before:
+            console.print(
+                f"[yellow]✨ you've piped this {seen_before + 1}× already — "
+                f"worth stashing?[/yellow]"
+            )
+        answer = typer.prompt(
+            "stash as [name] (blank to skip)", default="", show_default=False
+        )
+        name = answer.strip()
+        if not name:
+            console.print("[dim]not stashed.[/dim]")
+            return
+    else:
+        # Non-interactive and no --save-as: don't block, just hint.
+        if seen_before:
+            console.print(
+                f"[dim]tip: you've piped this {seen_before + 1}× — "
+                f"stash it with [bold]--save-as NAME[/bold].[/dim]"
+            )
+        return
+
+    record = Query(name=name, sql=sql, tags=_parse_tags(tags), desc=desc or "")
+    catalog = _load()
+    try:
+        catalog.add(record)
+    except DuplicateQueryError:
+        raise _fail(
+            f"A query named {record.name!r} already exists. "
+            f"Pick another name or use [bold]quackpack add --overwrite[/bold]."
+        )
+    except CatalogError as exc:
+        raise _fail(str(exc))
+
+    bits = [f"[green]stashed[/green] [bold cyan]{record.name}[/bold cyan]"]
+    if record.tags:
+        bits.append(f"tags: {', '.join(record.tags)}")
+    if record.params:
+        bits.append(f"params: {', '.join(record.params)}")
+    console.print("  ".join(bits))
 
 
 @app.command()
