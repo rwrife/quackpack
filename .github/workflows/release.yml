@@ -1,0 +1,106 @@
+name: Release
+
+# Tag-driven release. To ship:
+#   git tag v0.1.0 && git push origin v0.1.0
+# This builds the sdist + wheel, validates metadata, and attaches the artifacts
+# to the GitHub Release for that tag. Publishing to PyPI is opt-in: it only runs
+# when a `PYPI_API_TOKEN` repository secret is present, so the workflow is a safe
+# no-op on that front until you decide to publish.
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write # needed to create/update the GitHub Release
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build & verify distributions
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install build tooling
+        run: python -m pip install --upgrade pip build twine
+
+      - name: Build sdist + wheel
+        run: python -m build
+
+      - name: Verify metadata
+        run: python -m twine check dist/*
+
+      - name: Check tag matches package version
+        id: version
+        run: |
+          PKG_VERSION="$(python -c 'import tomllib,pathlib; print(tomllib.loads(pathlib.Path("pyproject.toml").read_text())["project"]["version"])')"
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          echo "version=${PKG_VERSION}" >> "$GITHUB_OUTPUT"
+          if [ "$PKG_VERSION" != "$TAG_VERSION" ]; then
+            echo "::error::Tag ${GITHUB_REF_NAME} (=> ${TAG_VERSION}) does not match pyproject version ${PKG_VERSION}."
+            exit 1
+          fi
+          echo "Tag and package version agree: ${PKG_VERSION}"
+
+      - name: Upload built distributions
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/*
+
+  github-release:
+    name: Attach to GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download distributions
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+
+      - name: Create or update GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: quackpack ${{ needs.build.outputs.version }}
+          generate_release_notes: true
+          files: dist/*
+
+  pypi-publish:
+    name: Publish to PyPI (opt-in)
+    needs: build
+    runs-on: ubuntu-latest
+    # Only runs when a PYPI_API_TOKEN secret is configured; otherwise skipped.
+    if: ${{ github.repository == 'rwrife/quackpack' }}
+    steps:
+      - name: Download distributions
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+
+      - name: Publish
+        env:
+          PYPI_API_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
+        run: |
+          if [ -z "${PYPI_API_TOKEN}" ]; then
+            echo "PYPI_API_TOKEN not set — skipping PyPI publish (GitHub Release still created)."
+            exit 0
+          fi
+          python -m pip install --upgrade pip twine
+          python -m twine upload --non-interactive \
+            -u __token__ -p "${PYPI_API_TOKEN}" dist/*

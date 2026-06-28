@@ -225,9 +225,18 @@ the "last run" column in `ls` and the run summary in `show`.
 
 ## Coming next (finishing M6)
 
-Discovery and recall are done (M5: `search`, `edit`, run history) and the
-[`examples/`](./examples) quickstart has landed. Remaining for the v0.1 ship:
-an asciinema/GIF demo and a tagged `v0.1.0` release (optionally on PyPI).
+Discovery and recall are done (M5: `search`, `edit`, run history), the
+[`examples/`](./examples) quickstart has landed, and the release plumbing is in
+place — a [`CHANGELOG.md`](./CHANGELOG.md) plus a tag-driven
+[release workflow](./.github/workflows/release.yml) that builds and verifies the
+sdist/wheel and attaches them to the GitHub Release (PyPI publish is opt-in via a
+repo secret). Shipping `v0.1.0` is now a one-liner for a maintainer:
+
+```console
+git tag v0.1.0 && git push origin v0.1.0
+```
+
+The only thing left for full polish is an asciinema/GIF demo in this README.
 
 ## Install
 
@@ -257,7 +266,7 @@ Python · DuckDB · Typer · Rich · YAML. Boring on purpose.
 
 ## License
 
-MIT (see `LICENSE`).
+MIT (see `LICENSE`). Release history lives in [`CHANGELOG.md`](./CHANGELOG.md).
 
 ---
 
