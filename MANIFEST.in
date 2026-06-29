@@ -1,0 +1,4 @@
+include CHANGELOG.md
+include PLAN.md
+include LICENSE
+include README.md
