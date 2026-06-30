@@ -7,7 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-_Nothing yet._
+### Changed
+
+- **`--help` polish** (M6): command help is now rendered as Markdown, so inline
+  code (`--file`, `:param`, `$EDITOR`, …) styles cleanly instead of leaking
+  literal `` ``RST`` `` backticks. No behavior change.
+
+### Documented
+
+- **Exit-code contract** (M6): documented and test-pinned the convention — `0`
+  on success (an empty `search`/`ls` result is success, not an error), `1` for
+  runtime/user errors (uniform `error:` prefix), `2` for usage errors.
 
 ## [0.1.0] - 2026-06-28
 

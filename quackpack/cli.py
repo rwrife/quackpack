@@ -48,6 +48,10 @@ app = typer.Typer(
     help="A personal pantry for your SQL. Stash, tag, parameterize, and rerun your queries.",
     no_args_is_help=True,
     add_completion=False,
+    # Render command help as Markdown so inline-code markup (`--file`, `:param`)
+    # styles cleanly in --help instead of leaking literal backticks. Command
+    # docstrings below use single-backtick Markdown for that reason.
+    rich_markup_mode="markdown",
 )
 
 console = Console()
@@ -280,9 +284,9 @@ def add(
         False, "--overwrite", help="Replace an existing query with the same name."
     ),
 ) -> None:
-    """Save a query from ``-q``, a file, or stdin.
+    """Save a query from `-q`, a file, or stdin.
 
-    ``:param`` placeholders in the SQL are detected and recorded automatically.
+    `:param` placeholders in the SQL are detected and recorded automatically.
     """
     sql = _read_sql(query, file)
     record = Query(name=name, sql=sql, tags=_parse_tags(tags), desc=desc or "")
@@ -376,8 +380,8 @@ def search(
 
     Matches the same fields as the catalog's search — name, SQL body,
     description, and tags — so you can recall a query by *anything* you remember
-    about it ("that one with the window function" → ``quackpack search window``).
-    Results render like ``ls`` so you immediately see tags, params, and recency.
+    about it ("that one with the window function" -> `quackpack search window`).
+    Results render like `ls` so you immediately see tags, params, and recency.
     """
     catalog = _load()
     rows = catalog.search(text)
@@ -413,11 +417,11 @@ def edit(
         help="Editor command to use (defaults to $VISUAL/$EDITOR, then a sane default).",
     ),
 ) -> None:
-    """Open a saved query's SQL in ``$EDITOR`` and save the edited version.
+    """Open a saved query's SQL in `$EDITOR` and save the edited version.
 
-    Launches your editor (``--editor``, else ``$VISUAL``/``$EDITOR``) on the
+    Launches your editor (`--editor`, else `$VISUAL`/`$EDITOR`) on the
     query's current SQL. On save, the new text replaces the stored SQL and the
-    ``:param`` list is re-derived, so adding or removing a placeholder is picked
+    `:param` list is re-derived, so adding or removing a placeholder is picked
     up automatically. Leaving the text unchanged (or emptying it) is a no-op —
     the catalog is left untouched.
     """
@@ -487,11 +491,11 @@ def run(
 ) -> None:
     """Run a stored query against a data target and render the results.
 
-    The query's SQL can reference a ``--file`` by its auto-derived relation name
-    (the file's stem, e.g. ``sales.csv`` -> ``sales``) or via DuckDB table
-    functions like ``read_csv_auto('sales.csv')``. ``:param`` placeholders are
-    bound from ``--param key=value`` (values are typed as int/float/str; add a
-    ``key:type`` hint to force one). Any declared param you don't pass is
+    The query's SQL can reference a `--file` by its auto-derived relation name
+    (the file's stem, e.g. `sales.csv` -> `sales`) or via DuckDB table
+    functions like `read_csv_auto('sales.csv')`. `:param` placeholders are
+    bound from `--param key=value` (values are typed as int/float/str; add a
+    `key:type` hint to force one). Any declared param you don't pass is
     prompted for interactively when running in a terminal.
     """
     if fmt.lower() not in FORMATS:
@@ -591,15 +595,15 @@ def pipe(
 ) -> None:
     """Run an ad-hoc query from stdin, then offer to stash it if it's a keeper.
 
-    The fast path is a pipe: ``echo "select ..." | quackpack pipe --file data.csv``
-    runs the SQL immediately — no ``add`` first. Afterwards, if you're at a
-    terminal, ``pipe`` asks whether to save it under a name (and nudges harder
+    The fast path is a pipe: `echo "select ..." | quackpack pipe --file data.csv`
+    runs the SQL immediately — no `add` first. Afterwards, if you're at a
+    terminal, `pipe` asks whether to save it under a name (and nudges harder
     when you've piped the *same* query before). Non-interactively, pass
-    ``--save-as NAME`` to stash in one shot, or ``--no-save`` to never be asked.
+    `--save-as NAME` to stash in one shot, or `--no-save` to never be asked.
 
-    Everything about execution — ``--file``/``--db`` targets, ``:param`` binding,
-    ``--format``, ``--engine`` — matches ``run``; ``pipe`` just sources the SQL
-    from stdin/``-q``/``--sql-file`` instead of a saved name.
+    Everything about execution — `--file`/`--db` targets, `:param` binding,
+    `--format`, `--engine` — matches `run`; `pipe` just sources the SQL
+    from stdin/`-q`/`--sql-file` instead of a saved name.
     """
     if fmt.lower() not in FORMATS:
         raise _fail(f"Unknown --format {fmt!r}. Choose one of: {', '.join(FORMATS)}.")

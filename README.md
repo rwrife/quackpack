@@ -223,6 +223,22 @@ queries:
 Every `quackpack run` bumps `run_count` / `last_run` / `last_status`, which is what powers
 the "last run" column in `ls` and the run summary in `show`.
 
+### Exit codes
+
+quackpack follows the usual CLI convention, so it composes cleanly in scripts and CI:
+
+- **`0`** — success. An empty result set (e.g. `search` / `ls` with no matches) is *not*
+  an error; it still exits `0`.
+- **`1`** — a runtime or user error (unknown query, bad `--param`/`--format`/`--engine`,
+  a SQL or file error). These print a uniform `error: …` message to stderr.
+- **`2`** — a usage error (missing/invalid arguments), surfaced by the CLI parser.
+
+```console
+$ quackpack run nope --file data.csv; echo "exit=$?"
+error: No query named 'nope'.
+exit=1
+```
+
 ## Coming next (finishing M6)
 
 Discovery and recall are done (M5: `search`, `edit`, run history), the
@@ -237,6 +253,9 @@ git tag v0.1.0 && git push origin v0.1.0
 ```
 
 The only thing left for full polish is an asciinema/GIF demo in this README.
+Every command's `--help` is now Markdown-rendered (clean inline-code, no stray
+markup), and exit codes follow the usual convention so quackpack scripts
+predictably (see [Exit codes](#exit-codes)).
 
 ## Install
 
