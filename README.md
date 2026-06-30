@@ -11,6 +11,22 @@ queries become reusable tools without becoming things you have to maintain.
 > there's now a bundled [`examples/`](./examples) quickstart you can run in ~2 minutes.
 > See [PLAN.md](./PLAN.md) for the full roadmap.
 
+## Demo
+
+Stash three queries, then rerun them against a CSV — including a bound `:param` and
+JSON out — in seconds:
+
+[![quackpack demo: stash queries, then rerun them against a CSV with a bound :param](./demo/quackpack.svg)](./demo/quackpack.cast)
+
+> Everything above is **real, reproducible CLI output**, not a mock-up. The still
+> is generated from actual runs against the bundled [`examples/`](./examples)
+> dataset; click it for the recorded [asciinema cast](./demo/quackpack.cast)
+> (`asciinema play demo/quackpack.cast`). To (re)render an animated GIF, run
+> `vhs demo/demo.tape` ([VHS](https://github.com/charmbracelet/vhs)). It's all
+> driven by [`demo/demo.sh`](./demo/demo.sh), which CI exercises so the demo
+> can't drift — see [`demo/README.md`](./demo/README.md). Prefer text? Just run
+> `demo/demo.sh`.
+
 ## Why
 
 DuckDB is the daily driver for slicing CSV/Parquet/SQLite — and every power user ends up
@@ -252,7 +268,13 @@ repo secret). Shipping `v0.1.0` is now a one-liner for a maintainer:
 git tag v0.1.0 && git push origin v0.1.0
 ```
 
-The only thing left for full polish is an asciinema/GIF demo in this README.
+The [demo](#demo) is now wired up too: the README shows a real, reproducible
+still ([`demo/quackpack.svg`](./demo/quackpack.svg)) plus a recorded asciinema
+cast ([`demo/quackpack.cast`](./demo/quackpack.cast)), both generated from a
+CI-guarded walkthrough ([`demo/demo.sh`](./demo/demo.sh)); a
+[VHS](https://github.com/charmbracelet/vhs) tape ([`demo/demo.tape`](./demo/demo.tape))
+renders an animated GIF on demand. So the only remaining maintainer steps are
+(optionally) committing that GIF and tagging the `v0.1.0` release above.
 Every command's `--help` is now Markdown-rendered (clean inline-code, no stray
 markup), and exit codes follow the usual convention so quackpack scripts
 predictably (see [Exit codes](#exit-codes)).
