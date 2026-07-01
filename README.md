@@ -180,6 +180,39 @@ Notes:
   SQLite fallback ingests CSVs (inferring numeric columns) and reads `.sqlite` files;
   Parquet requires DuckDB.
 
+### Param presets (saved bindings)
+
+One parameterized query becomes many one-keystroke reports. Save a named set of `:param`
+values on a query, then replay it with `run --preset <name>`. Presets are stored alongside
+the query in the catalog, so they travel with your pack.
+
+```console
+# Save a preset (values are typed just like --param; key:type hints work too):
+$ quackpack preset add sales q3-2026 --param region=west --param min:int=100
+saved preset q3-2026 on sales  min=100, region=west
+
+# List a query's presets (also shown in `quackpack show sales`):
+$ quackpack preset ls sales
+┏━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━┓
+┃ preset  ┃ bindings              ┃
+┡━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━┩
+│ q3-2026 │ min=100, region=west  │
+└━━━━━━━━━┴━━━━━━━━━━━━━━━━━━━━━━━┘
+
+# Replay the canned report in one keystroke:
+$ quackpack run sales --preset q3-2026 --file sales.csv
+
+# Override just one value on top of a preset (--param wins over the preset):
+$ quackpack run sales --preset q3-2026 --param region=east --file sales.csv
+
+# Remove a preset:
+$ quackpack preset rm sales q3-2026
+```
+
+Precedence when a `--preset` and `--param` collide: the preset supplies the base values,
+explicit `--param` flags override them, and anything still missing is prompted for (in a
+terminal) or warned about (in pipes/CI) — same as a plain `run`.
+
 ### Stash on the fly (`pipe`)
 
 Got a throwaway query you might want to keep? `quackpack pipe` runs SQL straight from

@@ -14,6 +14,8 @@ from quackpack.store import (
     Catalog,
     CatalogError,
     DuplicateQueryError,
+    PresetError,
+    PresetNotFoundError,
     Query,
     QueryNotFoundError,
     catalog_path,
@@ -218,3 +220,90 @@ def test_update_rejects_empty(home: Path) -> None:
     cat.add(Query(name="a", sql="select 1"))
     with pytest.raises(CatalogError):
         cat.update(Query(name="", sql="select 1"))
+
+
+# --------------------------------------------------------------------------
+# Param presets (backlog #8)
+# --------------------------------------------------------------------------
+
+
+def test_query_presets_default_empty_and_normalise() -> None:
+    q = Query(name="s", sql="select * from t where r = :r and n > :n")
+    assert q.presets == {}
+    # Names/keys are stripped; blank names and keys are dropped.
+    q.set_preset("  q3  ", {" r ": "west", "n": 5, "": "gone"})
+    assert q.presets == {"q3": {"r": "west", "n": 5}}
+
+
+def test_set_preset_empty_name_raises() -> None:
+    q = Query(name="s", sql="select :n")
+    with pytest.raises(PresetError):
+        q.set_preset("   ", {"n": 1})
+
+
+def test_presets_roundtrip_survives_reload(home: Path) -> None:
+    cat = Catalog.load()
+    cat.add(Query(name="sales", sql="select * from t where r = :r and n > :n"))
+    cat.set_preset("sales", "q3-2026", {"r": "west", "n": 25})
+    cat.set_preset("sales", "q4-2026", {"r": "east", "n": 40})
+
+    again = Catalog.load().get("sales")
+    assert again.presets == {
+        "q3-2026": {"r": "west", "n": 25},
+        "q4-2026": {"r": "east", "n": 40},
+    }
+    assert again.get_preset("q3-2026") == {"r": "west", "n": 25}
+
+
+def test_set_preset_overwrites_existing(home: Path) -> None:
+    cat = Catalog.load()
+    cat.add(Query(name="s", sql="select :n"))
+    cat.set_preset("s", "p", {"n": 1})
+    cat.set_preset("s", "p", {"n": 2})
+    assert Catalog.load().get("s").presets == {"p": {"n": 2}}
+
+
+def test_get_preset_missing_raises(home: Path) -> None:
+    q = Query(name="s", sql="select :n")
+    with pytest.raises(PresetNotFoundError):
+        q.get_preset("nope")
+
+
+def test_remove_preset_persists_and_missing_raises(home: Path) -> None:
+    cat = Catalog.load()
+    cat.add(Query(name="s", sql="select :n"))
+    cat.set_preset("s", "p", {"n": 1})
+    # Catalog.remove_preset returns the owning Query (like set_preset/record_run)
+    # and persists the removal.
+    owner = cat.remove_preset("s", "p")
+    assert owner.name == "s"
+    assert owner.presets == {}
+    assert Catalog.load().get("s").presets == {}
+    with pytest.raises(PresetNotFoundError):
+        cat.remove_preset("s", "p")
+
+
+def test_query_remove_preset_returns_binding() -> None:
+    # The Query-level helper returns the removed {param: value} mapping.
+    q = Query(name="s", sql="select :n")
+    q.set_preset("p", {"n": 1})
+    assert q.remove_preset("p") == {"n": 1}
+    assert q.presets == {}
+
+
+def test_preset_ops_on_missing_query_raise(home: Path) -> None:
+    cat = Catalog.load()
+    with pytest.raises(QueryNotFoundError):
+        cat.set_preset("ghost", "p", {"n": 1})
+    with pytest.raises(QueryNotFoundError):
+        cat.remove_preset("ghost", "p")
+
+
+def test_garbled_presets_tolerated_on_load(home: Path) -> None:
+    # A non-mapping presets value, and a preset whose binding isn't a mapping,
+    # must not make the catalog unloadable — they degrade to empty.
+    assert Query.from_dict({"name": "a", "sql": "select :n", "presets": "oops"}).presets == {}
+    q = Query.from_dict(
+        {"name": "b", "sql": "select :n", "presets": {"p": [1, 2], "q": {"n": 3}}}
+    )
+    assert q.presets == {"p": {}, "q": {"n": 3}}
