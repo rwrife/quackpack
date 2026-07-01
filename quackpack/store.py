@@ -22,6 +22,8 @@ File shape
         desc: Biggest spenders in a CSV.
         created: "2026-06-22T19:40:00+00:00"
         params: [file, n]
+        presets:
+          q3-2026: {n: 25}
         run_count: 3
         last_run: "2026-06-25T19:40:00+00:00"
         last_status: ok
@@ -33,7 +35,7 @@ import os
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterable, Iterator, Optional
+from typing import Any, Iterable, Iterator, Optional
 
 import yaml
 
@@ -46,6 +48,8 @@ __all__ = [
     "CatalogError",
     "DuplicateQueryError",
     "QueryNotFoundError",
+    "PresetError",
+    "PresetNotFoundError",
     "catalog_home",
     "catalog_path",
 ]
@@ -63,6 +67,14 @@ class DuplicateQueryError(CatalogError):
 
 class QueryNotFoundError(CatalogError):
     """Raised when a named query can't be found."""
+
+
+class PresetError(CatalogError):
+    """Base class for problems manipulating a query's param presets."""
+
+
+class PresetNotFoundError(PresetError):
+    """Raised when a named preset can't be found on a query."""
 
 
 def catalog_home() -> Path:
@@ -92,6 +104,39 @@ def _coerce_int(value: object) -> int:
     return n if n > 0 else 0
 
 
+def _clean_binding(values: object) -> dict[str, Any]:
+    """Normalise one preset's ``{param: value}`` mapping.
+
+    Coerces to a plain dict with stripped, non-empty string keys. Non-mapping
+    input (a garbled hand edit) degrades to an empty binding rather than raising
+    so a single bad preset can't make the whole catalog unloadable.
+    """
+    if not isinstance(values, dict):
+        return {}
+    out: dict[str, Any] = {}
+    for key, val in values.items():
+        k = str(key).strip()
+        if k:
+            out[k] = val
+    return out
+
+
+def _clean_presets(presets: object) -> dict[str, dict[str, Any]]:
+    """Normalise the whole ``presets`` mapping (name -> binding).
+
+    Strips/drops blank preset names and cleans each binding via
+    :func:`_clean_binding`. Tolerant of a non-mapping value on load.
+    """
+    if not isinstance(presets, dict):
+        return {}
+    out: dict[str, dict[str, Any]] = {}
+    for name, binding in presets.items():
+        key = str(name).strip()
+        if key:
+            out[key] = _clean_binding(binding)
+    return out
+
+
 @dataclass
 class Query:
     """A single saved query and its metadata.
@@ -106,6 +151,7 @@ class Query:
     desc: str = ""
     created: str = field(default_factory=_now_iso)
     params: list[str] = field(default_factory=list)
+    presets: dict[str, dict[str, Any]] = field(default_factory=dict)
     run_count: int = 0
     last_run: str = ""
     last_status: str = ""
@@ -123,6 +169,10 @@ class Query:
         self.desc = (self.desc or "").strip()
         if not self.params:
             self.params = extract_params(self.sql)
+        # Presets: a mapping of preset-name -> {param: value}. Normalise the
+        # names (strip/drop blanks) and coerce each binding set to a plain dict
+        # with string keys, tolerating garbled hand edits on load.
+        self.presets = _clean_presets(self.presets)
         # History fields are tolerant of absent/garbled values on load.
         self.run_count = _coerce_int(self.run_count)
         self.last_run = (self.last_run or "").strip()
@@ -139,6 +189,42 @@ class Query:
         self.last_run = when or now_iso()
         self.last_status = status
 
+    # -- presets -----------------------------------------------------------
+
+    def set_preset(self, name: str, values: dict[str, Any]) -> dict[str, Any]:
+        """Create or replace the preset *name* with *values*, returning it.
+
+        *values* is a ``{param: value}`` mapping. Keys are stripped; empty keys
+        are dropped. Adding a preset never validates that the params exist on
+        the query (a query's ``:param`` set can change), but the CLI warns when
+        a preset references an unknown one.
+        """
+        key = name.strip()
+        if not key:
+            raise PresetError("Preset name must not be empty.")
+        self.presets[key] = _clean_binding(values)
+        return self.presets[key]
+
+    def get_preset(self, name: str) -> dict[str, Any]:
+        """Return the binding set for preset *name* or raise."""
+        key = name.strip()
+        try:
+            return self.presets[key]
+        except KeyError:
+            raise PresetNotFoundError(
+                f"Query {self.name!r} has no preset named {name!r}."
+            ) from None
+
+    def remove_preset(self, name: str) -> dict[str, Any]:
+        """Remove and return the binding set for preset *name* or raise."""
+        key = name.strip()
+        try:
+            return self.presets.pop(key)
+        except KeyError:
+            raise PresetNotFoundError(
+                f"Query {self.name!r} has no preset named {name!r}."
+            ) from None
+
     def to_dict(self) -> dict:
         """Serialise to a plain dict suitable for YAML dumping."""
         return asdict(self)
@@ -153,6 +239,9 @@ class Query:
             desc=data.get("desc", "") or "",
             created=data.get("created") or _now_iso(),
             params=list(data.get("params") or []),
+            # Pass the raw presets value through; __post_init__ normalises and
+            # tolerates non-mapping junk via _clean_presets.
+            presets=data.get("presets") or {},
             run_count=data.get("run_count", 0),
             last_run=data.get("last_run", "") or "",
             last_status=data.get("last_status", "") or "",
@@ -310,6 +399,37 @@ class Catalog:
         """
         q = self.get(name)
         q.record_run(status)
+        if save:
+            self.save()
+        return q
+
+    # -- presets -----------------------------------------------------------
+
+    def set_preset(
+        self, query_name: str, preset: str, values: dict, *, save: bool = True
+    ) -> Query:
+        """Create/replace *preset* on the named query and persist.
+
+        Returns the owning :class:`Query`. Raises :class:`QueryNotFoundError`
+        if the query is unknown or :class:`PresetError` if the preset name is
+        empty.
+        """
+        q = self.get(query_name)
+        q.set_preset(preset, values)
+        if save:
+            self.save()
+        return q
+
+    def remove_preset(
+        self, query_name: str, preset: str, *, save: bool = True
+    ) -> Query:
+        """Remove *preset* from the named query and persist.
+
+        Raises :class:`QueryNotFoundError` if the query is unknown or
+        :class:`PresetNotFoundError` if it has no such preset.
+        """
+        q = self.get(query_name)
+        q.remove_preset(preset)
         if save:
             self.save()
         return q

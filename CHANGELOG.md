@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Param presets** (backlog #8): name a reusable set of `:param` values on a
+  query with `preset add <query> <name> --param k=v` (values typed like
+  `--param`, `key:type` hints supported), list them with `preset ls <query>`
+  (also shown in `show`), and remove with `preset rm <query> <name>`. Replay a
+  canned report in one keystroke via `run <query> --preset <name>`; explicit
+  `--param` flags override the preset's values. Presets are stored alongside the
+  query in the pack, so they travel with it.
+
 ### Changed
 
 - **`--help` polish** (M6): command help is now rendered as Markdown, so inline
