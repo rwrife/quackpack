@@ -11,7 +11,9 @@ in ``$EDITOR`` (re-parsing ``:params`` on save), and every ``run`` records run
 history so ``ls``/``show`` surface "last run Nd ago" and the last outcome.
 Beyond the milestones, ``pipe`` (backlog #7) closes the capture loop: run a
 throwaway query from stdin and then *offer to stash it* — nudging harder when
-you've piped the same SQL before.
+you've piped the same SQL before. Param presets (backlog #8) name a reusable set
+of ``:param`` values per query (``preset add/ls/rm``) so ``run --preset q3-2026``
+replays a canned report in one keystroke.
 """
 
 from __future__ import annotations
@@ -38,6 +40,8 @@ from .store import (
     Catalog,
     CatalogError,
     DuplicateQueryError,
+    PresetError,
+    PresetNotFoundError,
     Query,
     QueryNotFoundError,
     catalog_path,
@@ -140,6 +144,17 @@ def _read_sql(query: Optional[str], file: Optional[Path]) -> str:
     return text
 
 
+def _fmt_binding(binding: dict) -> str:
+    """Render a preset's ``{param: value}`` mapping as ``k=v`` pairs for display.
+
+    Keys are sorted for stable output; an empty binding shows as ``(empty)`` so
+    a preset saved without values is still legible.
+    """
+    if not binding:
+        return "(empty)"
+    return ", ".join(f"{k}={binding[k]}" for k in sorted(binding))
+
+
 def _parse_params(pairs: Optional[List[str]]) -> dict:
     """Parse repeated ``--param key=value`` flags into a typed dict.
 
@@ -181,15 +196,23 @@ def _prompt_for_missing(missing: List[str]) -> dict:
     return out
 
 
-def _resolve_params(declared: List[str], supplied: Optional[List[str]]) -> dict:
+def _resolve_params(
+    declared: List[str],
+    supplied: Optional[List[str]],
+    *,
+    base: Optional[dict] = None,
+) -> dict:
     """Merge ``--param`` flags with declared ``:param`` names, prompting for gaps.
 
-    Parses the supplied ``key=value`` flags, then for any declared placeholder
-    still missing either prompts (real TTY) or warns and lets the engine raise a
-    precise binding error (pipes/CI). Shared by ``run`` and ``pipe`` so both
-    treat parameters identically.
+    An optional *base* mapping (e.g. a ``--preset``'s saved values) seeds the
+    params first; parsed ``--param`` flags then override any overlapping keys,
+    and finally for any declared placeholder *still* missing we either prompt
+    (real TTY) or warn and let the engine raise a precise binding error
+    (pipes/CI). Shared by ``run`` and ``pipe`` so both treat parameters
+    identically.
     """
-    params = _parse_params(supplied)
+    params: dict[str, Any] = dict(base or {})
+    params.update(_parse_params(supplied))
     missing = [p for p in declared if p not in params]
     if missing:
         if _stdin_is_interactive():
@@ -367,6 +390,10 @@ def show(
     meta.append(f"last run: {describe_last_run(q.last_run, q.last_status)}")
     if meta:
         console.print("[dim]" + "  |  ".join(meta) + "[/dim]")
+    if q.presets:
+        console.print("[bold]presets:[/bold]")
+        for pname in sorted(q.presets):
+            console.print(f"  [green]{pname}[/green]: {_fmt_binding(q.presets[pname])}")
     console.print(Syntax(q.sql, "sql", theme="ansi_dark", word_wrap=True))
 
 
@@ -476,6 +503,12 @@ def run(
         "-p",
         help="Bind a :param as key=value (repeatable).",
     ),
+    preset: Optional[str] = typer.Option(
+        None,
+        "--preset",
+        "-P",
+        help="Apply a saved preset's param values as a base (--param overrides).",
+    ),
     fmt: str = typer.Option(
         "table",
         "--format",
@@ -495,7 +528,10 @@ def run(
     (the file's stem, e.g. `sales.csv` -> `sales`) or via DuckDB table
     functions like `read_csv_auto('sales.csv')`. `:param` placeholders are
     bound from `--param key=value` (values are typed as int/float/str; add a
-    `key:type` hint to force one). Any declared param you don't pass is
+    `key:type` hint to force one). A `--preset NAME` supplies a saved set of
+    param values as the base layer, so `quackpack run sales --preset q3-2026`
+    reruns a canned report in one keystroke; any `--param` you pass alongside
+    overrides the matching preset value. Any declared param still missing is
     prompted for interactively when running in a terminal.
     """
     if fmt.lower() not in FORMATS:
@@ -507,10 +543,20 @@ def run(
     except QueryNotFoundError as exc:
         raise _fail(str(exc))
 
+    # A preset seeds a base layer of param values; explicit --param flags (and
+    # any interactive prompts) win over it. Merged inside _resolve_params so the
+    # "which params are still missing?" bookkeeping stays in one place.
+    preset_values: Optional[dict] = None
+    if preset is not None:
+        try:
+            preset_values = dict(query.get_preset(preset))
+        except PresetNotFoundError as exc:
+            raise _fail(str(exc))
+
     # Reconcile declared params with what was supplied. Anything still missing
     # is prompted for when we have a real TTY; otherwise (pipes/CI) we warn and
     # let the engine raise a precise binding error if the param is truly needed.
-    params = _resolve_params(query.params, param)
+    params = _resolve_params(query.params, param, base=preset_values)
 
     try:
         result = run_query(
@@ -729,6 +775,141 @@ def rm(
 
     catalog.remove(target.name)
     console.print(f"[green]removed[/green] [bold cyan]{target.name}[/bold cyan]")
+
+
+# --------------------------------------------------------------------------
+# Command group: preset add / ls / rm  (backlog #8)
+# --------------------------------------------------------------------------
+
+preset_app = typer.Typer(
+    name="preset",
+    help="Manage saved param presets (named sets of :param values) on a query.",
+    no_args_is_help=True,
+    add_completion=False,
+    rich_markup_mode="markdown",
+)
+app.add_typer(preset_app, name="preset")
+
+
+@preset_app.command("add")
+def preset_add(
+    query: str = typer.Argument(..., help="Name of the saved query to attach the preset to."),
+    preset: str = typer.Argument(..., help="Name for this preset, e.g. `q3-2026`."),
+    param: Optional[List[str]] = typer.Option(
+        None,
+        "--param",
+        "-p",
+        help="A :param value as key=value (repeatable).",
+    ),
+    overwrite: bool = typer.Option(
+        False, "--overwrite", help="Replace an existing preset with the same name."
+    ),
+) -> None:
+    """Save a named set of `:param` values on a query.
+
+    Bundles the `--param key=value` pairs (typed just like `run`, with optional
+    `key:type` hints) under `preset` so `quackpack run <query> --preset <name>`
+    reruns it in one keystroke. Params that aren't declared by the query are
+    still stored, but flagged with a warning so a typo is easy to catch.
+    """
+    catalog = _load()
+    try:
+        q = catalog.get(query)
+    except QueryNotFoundError as exc:
+        raise _fail(str(exc))
+
+    pname = preset.strip()
+    if not pname:
+        raise _fail("The preset name must not be empty.")
+    if pname in q.presets and not overwrite:
+        raise _fail(
+            f"Query {q.name!r} already has a preset named {pname!r}. "
+            f"Re-run with [bold]--overwrite[/bold] to replace it."
+        )
+
+    values = _parse_params(param)
+    if not values:
+        raise _fail("A preset needs at least one --param key=value.")
+
+    unknown = [k for k in values if k not in q.params]
+    if unknown:
+        err_console.print(
+            f"[yellow]warning:[/yellow] preset sets param(s) not used by "
+            f"{q.name!r}: {', '.join(unknown)}"
+        )
+
+    try:
+        catalog.set_preset(q.name, pname, values)
+    except (PresetError, CatalogError) as exc:
+        raise _fail(str(exc))
+
+    console.print(
+        f"[green]saved preset[/green] [green]{pname}[/green] on "
+        f"[bold cyan]{q.name}[/bold cyan]  {_fmt_binding(values)}"
+    )
+
+
+@preset_app.command("ls")
+def preset_ls(
+    query: str = typer.Argument(..., help="Name of the saved query whose presets to list."),
+) -> None:
+    """List the presets saved on a query."""
+    catalog = _load()
+    try:
+        q = catalog.get(query)
+    except QueryNotFoundError as exc:
+        raise _fail(str(exc))
+
+    if not q.presets:
+        console.print(
+            f"No presets on [bold cyan]{q.name}[/bold cyan]. "
+            f"Add one with [bold]quackpack preset add {q.name} <name> -p k=v[/bold]."
+        )
+        return
+
+    table = Table(title=None, header_style="bold", show_lines=False)
+    table.add_column("preset", style="green", no_wrap=True)
+    table.add_column("bindings")
+    for pname in sorted(q.presets):
+        table.add_row(pname, _fmt_binding(q.presets[pname]))
+    console.print(table)
+    plural = "preset" if len(q.presets) == 1 else "presets"
+    console.print(f"[dim]{len(q.presets)} {plural} on {q.name}[/dim]")
+
+
+@preset_app.command("rm")
+def preset_rm(
+    query: str = typer.Argument(..., help="Name of the saved query."),
+    preset: str = typer.Argument(..., help="Name of the preset to remove."),
+    yes: bool = typer.Option(
+        False, "--yes", "-y", help="Skip the confirmation prompt."
+    ),
+) -> None:
+    """Remove a saved preset from a query."""
+    catalog = _load()
+    try:
+        q = catalog.get(query)
+    except QueryNotFoundError as exc:
+        raise _fail(str(exc))
+    try:
+        q.get_preset(preset)
+    except PresetNotFoundError as exc:
+        raise _fail(str(exc))
+
+    if not yes:
+        confirm = typer.confirm(f"Remove preset {preset!r} from {q.name!r}?")
+        if not confirm:
+            console.print("Aborted.")
+            raise typer.Exit()
+
+    try:
+        catalog.remove_preset(q.name, preset)
+    except (PresetNotFoundError, CatalogError) as exc:
+        raise _fail(str(exc))
+    console.print(
+        f"[green]removed preset[/green] [green]{preset.strip()}[/green] from "
+        f"[bold cyan]{q.name}[/bold cyan]"
+    )
 
 
 if __name__ == "__main__":  # pragma: no cover
