@@ -213,6 +213,44 @@ Precedence when a `--preset` and `--param` collide: the preset supplies the base
 explicit `--param` flags override them, and anything still missing is prompted for (in a
 terminal) or warned about (in pipes/CI) — same as a plain `run`.
 
+### Query composition (`{{ templating }}`)
+
+Factor a common cleaning step or join into one query, then reference it from others with
+`{{ query_name }}`. Each reference is inlined as a parenthesised subquery and the whole
+thing is resolved to a single flat SQL string before it runs, so your building blocks stay
+DRY without any copy-paste.
+
+```console
+# A reusable base query...
+$ quackpack add --name orders_clean \
+    -q "select * from read_csv_auto(:file) where status <> 'void'"
+
+# ...composed into a bigger one:
+$ quackpack add --name big_orders \
+    -q "select * from {{ orders_clean }} where amount > :threshold"
+
+# show lists what a query pulls in:
+$ quackpack show big_orders
+big_orders
+params: threshold  |  runs: 0  |  last run: never
+references: orders_clean
+select * from {{ orders_clean }} where amount > :threshold
+
+# --expanded previews the flattened SQL that run will execute:
+$ quackpack show --expanded big_orders
+...
+select * from (select * from read_csv_auto(:file) where status <> 'void')
+  where amount > :threshold
+
+# run expands + binds params from every level (:file here comes from orders_clean):
+$ quackpack run big_orders --file orders.csv --param threshold=500
+```
+
+References can nest to any depth. Cycles (`a → b → a`, or a query that references itself)
+and unknown references are caught up front with a clean `error:` and a non-zero exit —
+nothing half-expanded ever reaches the engine. A `{{ … }}` inside a string literal is left
+alone, so it never gets mistaken for a reference.
+
 ### Stash on the fly (`pipe`)
 
 Got a throwaway query you might want to keep? `quackpack pipe` runs SQL straight from

@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Query templating / composition** (backlog #10): reference one saved query
+  inside another with `{{ other_query }}`. References are inlined as
+  parenthesised subqueries at `run` time and resolved to a single flat SQL
+  string before execution (params from the referenced query are bound too);
+  cycles (direct or transitive) and unknown references fail with a clean
+  `error:`. `show` lists a query's `references`, and `show --expanded <name>`
+  previews the fully flattened SQL. Lets you factor common cleaning/joins into
+  reusable building blocks.
 - **Param presets** (backlog #8): name a reusable set of `:param` values on a
   query with `preset add <query> <name> --param k=v` (values typed like
   `--param`, `key:type` hints supported), list them with `preset ls <query>`

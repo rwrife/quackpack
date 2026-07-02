@@ -13,7 +13,11 @@ Beyond the milestones, ``pipe`` (backlog #7) closes the capture loop: run a
 throwaway query from stdin and then *offer to stash it* — nudging harder when
 you've piped the same SQL before. Param presets (backlog #8) name a reusable set
 of ``:param`` values per query (``preset add/ls/rm``) so ``run --preset q3-2026``
-replays a canned report in one keystroke.
+replays a canned report in one keystroke. Query templating (backlog #10) lets a
+query reference another with ``{{ other_query }}``: those refs inline as
+parenthesised subqueries at ``run`` time (with cycle detection), and
+``show --expanded`` previews the flattened SQL — so common cleaning/joins become
+reusable building blocks.
 """
 
 from __future__ import annotations
@@ -45,6 +49,11 @@ from .store import (
     Query,
     QueryNotFoundError,
     catalog_path,
+)
+from .templating import (
+    TemplateError,
+    expand_query,
+    extract_refs,
 )
 
 app = typer.Typer(
@@ -368,8 +377,18 @@ def ls(
 @app.command()
 def show(
     name: str = typer.Argument(..., help="Name of the query to display."),
+    expanded: bool = typer.Option(
+        False,
+        "--expanded",
+        help="Resolve `{{ query }}` references and show the flattened SQL.",
+    ),
 ) -> None:
-    """Print a stored query's SQL plus its metadata."""
+    """Print a stored query's SQL plus its metadata.
+
+    With `--expanded`, any `{{ other_query }}` references are inlined (as
+    parenthesised subqueries) into a single flat SQL string — the exact SQL
+    `run` would execute — with cycles and unknown references reported as errors.
+    """
     catalog = _load()
     try:
         q = catalog.get(name)
@@ -390,11 +409,23 @@ def show(
     meta.append(f"last run: {describe_last_run(q.last_run, q.last_status)}")
     if meta:
         console.print("[dim]" + "  |  ".join(meta) + "[/dim]")
+    # Surface composition so `show` documents the building blocks a query pulls
+    # in (only when it actually references others).
+    refs = extract_refs(q.sql)
+    if refs:
+        console.print(f"[dim]references: {', '.join(refs)}[/dim]")
     if q.presets:
         console.print("[bold]presets:[/bold]")
         for pname in sorted(q.presets):
             console.print(f"  [green]{pname}[/green]: {_fmt_binding(q.presets[pname])}")
-    console.print(Syntax(q.sql, "sql", theme="ansi_dark", word_wrap=True))
+
+    sql = q.sql
+    if expanded:
+        try:
+            sql = expand_query(catalog, name)
+        except TemplateError as exc:
+            raise _fail(str(exc))
+    console.print(Syntax(sql, "sql", theme="ansi_dark", word_wrap=True))
 
 
 @app.command()
@@ -543,6 +574,14 @@ def run(
     except QueryNotFoundError as exc:
         raise _fail(str(exc))
 
+    # Composition: inline any `{{ other_query }}` references into a single flat
+    # SQL string before execution. Unknown refs / cycles surface as clean
+    # `error:` messages here rather than as opaque SQL failures downstream.
+    try:
+        sql = expand_query(catalog, name)
+    except TemplateError as exc:
+        raise _fail(str(exc))
+
     # A preset seeds a base layer of param values; explicit --param flags (and
     # any interactive prompts) win over it. Merged inside _resolve_params so the
     # "which params are still missing?" bookkeeping stays in one place.
@@ -553,14 +592,17 @@ def run(
         except PresetNotFoundError as exc:
             raise _fail(str(exc))
 
-    # Reconcile declared params with what was supplied. Anything still missing
+    # Reconcile declared params with what was supplied. Params can come from a
+    # referenced query too, so derive the expected set from the *expanded* SQL
+    # rather than only the top-level query's stored list. Anything still missing
     # is prompted for when we have a real TTY; otherwise (pipes/CI) we warn and
     # let the engine raise a precise binding error if the param is truly needed.
-    params = _resolve_params(query.params, param, base=preset_values)
+    expected_params = extract_params(sql)
+    params = _resolve_params(expected_params, param, base=preset_values)
 
     try:
         result = run_query(
-            query.sql,
+            sql,
             db=db,
             file=file,
             params=params,
