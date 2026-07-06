@@ -7,37 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added
+Nothing yet.
 
-- **Query templating / composition** (backlog #10): reference one saved query
-  inside another with `{{ other_query }}`. References are inlined as
-  parenthesised subqueries at `run` time and resolved to a single flat SQL
-  string before execution (params from the referenced query are bound too);
-  cycles (direct or transitive) and unknown references fail with a clean
-  `error:`. `show` lists a query's `references`, and `show --expanded <name>`
-  previews the fully flattened SQL. Lets you factor common cleaning/joins into
-  reusable building blocks.
-- **Param presets** (backlog #8): name a reusable set of `:param` values on a
-  query with `preset add <query> <name> --param k=v` (values typed like
-  `--param`, `key:type` hints supported), list them with `preset ls <query>`
-  (also shown in `show`), and remove with `preset rm <query> <name>`. Replay a
-  canned report in one keystroke via `run <query> --preset <name>`; explicit
-  `--param` flags override the preset's values. Presets are stored alongside the
-  query in the pack, so they travel with it.
-
-### Changed
-
-- **`--help` polish** (M6): command help is now rendered as Markdown, so inline
-  code (`--file`, `:param`, `$EDITOR`, …) styles cleanly instead of leaking
-  literal `` ``RST`` `` backticks. No behavior change.
-
-### Documented
-
-- **Exit-code contract** (M6): documented and test-pinned the convention — `0`
-  on success (an empty `search`/`ls` result is success, not an error), `1` for
-  runtime/user errors (uniform `error:` prefix), `2` for usage errors.
-
-## [0.1.0] - 2026-06-28
+## [0.1.0] - 2026-07-05
 
 First public release — the smallest genuinely useful "stash & rerun your SQL"
 CLI. A stranger can `pipx install` it and run a stored query from the README in
@@ -69,7 +41,28 @@ about two minutes.
   fingerprinted recent-pipe log nudges you to save when you re-pipe the same SQL.
 - **Examples quickstart**: a bundled `examples/` sample dataset (`sales.csv`),
   three starter queries, and a ready-to-load `pack.yaml`.
+- **Param presets** (backlog #8): name a reusable set of `:param` values on a
+  query with `preset add <query> <name> --param k=v` (values typed like
+  `--param`, `key:type` hints supported), list them with `preset ls <query>`
+  (also shown in `show`), and remove with `preset rm <query> <name>`. Replay a
+  canned report in one keystroke via `run <query> --preset <name>`; explicit
+  `--param` flags override the preset's values. Presets are stored alongside the
+  query in the pack, so they travel with it.
+- **Query templating / composition** (backlog #10): reference one saved query
+  inside another with `{{ other_query }}`. References are inlined as
+  parenthesised subqueries at `run` time and resolved to a single flat SQL
+  string before execution (params from the referenced query are bound too);
+  cycles (direct or transitive) and unknown references fail with a clean
+  `error:`. `show` lists a query's `references`, and `show --expanded <name>`
+  previews the fully flattened SQL. Lets you factor common cleaning/joins into
+  reusable building blocks.
+- **`--help` polish** (M6): command help is rendered as Markdown, so inline
+  code (`--file`, `:param`, `$EDITOR`, …) styles cleanly instead of leaking
+  literal RST backticks.
 - **Docs**: README with quickstart, usage, and `pipx` / `uv tool` install docs.
+- **Exit-code contract** (M6): documented and test-pinned the convention — `0`
+  on success (an empty `search`/`ls` result is success, not an error), `1` for
+  runtime/user errors (uniform `error:` prefix), `2` for usage errors.
 
 [Unreleased]: https://github.com/rwrife/quackpack/compare/v0.1.0...HEAD
 [0.1.0]: https://github.com/rwrife/quackpack/releases/tag/v0.1.0
