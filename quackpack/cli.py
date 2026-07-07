@@ -17,7 +17,10 @@ replays a canned report in one keystroke. Query templating (backlog #10) lets a
 query reference another with ``{{ other_query }}``: those refs inline as
 parenthesised subqueries at ``run`` time (with cycle detection), and
 ``show --expanded`` previews the flattened SQL — so common cleaning/joins become
-reusable building blocks.
+reusable building blocks. Result snapshots & diff (backlog #3) cache each
+successful ``run`` result and add ``diff`` — re-run a query and see what rows were
+added/removed (and, with a recorded ``--key``, which rows *changed* column by
+column) since last time; ``snapshot show/rm`` inspect or clear the cache.
 """
 
 from __future__ import annotations
@@ -36,10 +39,19 @@ from rich.table import Table
 
 from . import __version__
 from .engine import EngineError, available_engines, run_query
-from .history import ERROR, OK, describe_last_run
+from .history import ERROR, OK, describe_last_run, humanize_age
 from .params import coerce_value, extract_params, split_param_key
 from .pipes import PipeLog
 from .render import FORMATS, render
+from .snapshots import (
+    DiffResult,
+    Snapshot,
+    SnapshotError,
+    delete_snapshot,
+    diff_results,
+    load_snapshot,
+    save_snapshot,
+)
 from .store import (
     Catalog,
     CatalogError,
@@ -162,6 +174,70 @@ def _fmt_binding(binding: dict) -> str:
     if not binding:
         return "(empty)"
     return ", ".join(f"{k}={binding[k]}" for k in sorted(binding))
+
+
+def _cell(value: Any) -> str:
+    """Stringify a diff cell (None -> dim NULL marker), matching render.py."""
+    if value is None:
+        return "[dim]NULL[/dim]"
+    return str(value)
+
+
+def _render_diff(diff: DiffResult, name: str, *, taken: str) -> None:
+    """Print a :class:`~quackpack.snapshots.DiffResult` as tidy Rich tables.
+
+    Added rows are green (``+``), removed red (``-``), and changed rows (only
+    when a key was used) show each differing column as ``old → new``. A header
+    line notes the snapshot age and the ``+A -R ~C`` summary so a glance answers
+    "what changed since last time?".
+    """
+    age = humanize_age(taken)
+    keynote = f" (key: {', '.join(diff.key)})" if diff.keyed and diff.key else ""
+    console.print(
+        f"diff [bold cyan]{name}[/bold cyan] vs snapshot from "
+        f"[dim]{age}[/dim]{keynote}"
+    )
+
+    if diff.is_empty:
+        console.print("[green]no changes[/green] — result is identical to the snapshot.")
+        return
+
+    cols = diff.columns or []
+
+    if diff.added:
+        table = Table(title=None, header_style="bold green", show_lines=False)
+        table.add_column("+", style="green", no_wrap=True)
+        for c in cols:
+            table.add_column(str(c))
+        for row in diff.added:
+            table.add_row("+", *(_cell(row.get(c)) for c in cols))
+        console.print(table)
+
+    if diff.removed:
+        table = Table(title=None, header_style="bold red", show_lines=False)
+        table.add_column("-", style="red", no_wrap=True)
+        for c in cols:
+            table.add_column(str(c))
+        for row in diff.removed:
+            table.add_row("-", *(_cell(row.get(c)) for c in cols))
+        console.print(table)
+
+    if diff.changed:
+        table = Table(title=None, header_style="bold yellow", show_lines=False)
+        table.add_column("~", style="yellow", no_wrap=True)
+        for c in diff.key:
+            table.add_column(str(c), style="cyan")
+        table.add_column("changes")
+        for rc in diff.changed:
+            deltas = ", ".join(
+                f"{col}: {_cell(before)} → {_cell(after)}"
+                for col, (before, after) in rc.changes.items()
+            )
+            keyvals = [_cell(rc.after.get(c, rc.before.get(c))) for c in diff.key]
+            table.add_row("~", *keyvals, deltas)
+        console.print(table)
+
+    console.print(f"[dim]{diff.summary()}[/dim]")
 
 
 def _parse_params(pairs: Optional[List[str]]) -> dict:
@@ -552,6 +628,17 @@ def run(
         "-e",
         help="Execution engine: auto, duckdb, or sqlite.",
     ),
+    key: Optional[List[str]] = typer.Option(
+        None,
+        "--key",
+        "-k",
+        help="Identity column(s) for `diff` (repeatable). Stored with the snapshot.",
+    ),
+    snapshot: bool = typer.Option(
+        True,
+        "--snapshot/--no-snapshot",
+        help="Cache this result so `quackpack diff` can compare later runs.",
+    ),
 ) -> None:
     """Run a stored query against a data target and render the results.
 
@@ -564,6 +651,11 @@ def run(
     reruns a canned report in one keystroke; any `--param` you pass alongside
     overrides the matching preset value. Any declared param still missing is
     prompted for interactively when running in a terminal.
+
+    Unless `--no-snapshot` is given, the result is cached so a later
+    `quackpack diff <name>` can show what changed since this run. Pass `--key
+    <col>` (repeatable) to record identity columns — with a key, `diff` can
+    report *changed* rows (per-column before/after), not just added/removed.
     """
     if fmt.lower() not in FORMATS:
         raise _fail(f"Unknown --format {fmt!r}. Choose one of: {', '.join(FORMATS)}.")
@@ -622,7 +714,153 @@ def run(
     except CatalogError:  # pragma: no cover - best-effort bookkeeping
         pass
 
+    # Cache the result so a later `diff` can compare against it. Best-effort:
+    # a snapshot write failure must never break a successful run, so we warn
+    # and carry on rather than raising.
+    if snapshot:
+        key_cols = [k.strip() for k in (key or []) if k and k.strip()]
+        try:
+            snap = Snapshot.from_result(
+                query.name,
+                result,
+                key=key_cols,
+                params=params,
+                engine=engine,
+            )
+            save_snapshot(snap)
+        except OSError as exc:  # pragma: no cover - filesystem edge
+            err_console.print(
+                f"[yellow]warning:[/yellow] could not save snapshot: {exc}"
+            )
+
     render(result, fmt, console)
+
+
+@app.command()
+def diff(
+    name: str = typer.Argument(..., help="Name of the saved query to diff against its snapshot."),
+    db: Optional[Path] = typer.Option(
+        None, "--db", help="Database file to query (DuckDB or SQLite)."
+    ),
+    file: Optional[Path] = typer.Option(
+        None,
+        "--file",
+        "-f",
+        help="Data file to expose to the query (CSV / Parquet / SQLite).",
+    ),
+    param: Optional[List[str]] = typer.Option(
+        None,
+        "--param",
+        "-p",
+        help="Bind a :param as key=value (repeatable).",
+    ),
+    preset: Optional[str] = typer.Option(
+        None,
+        "--preset",
+        "-P",
+        help="Apply a saved preset's param values as a base (--param overrides).",
+    ),
+    engine: str = typer.Option(
+        "auto",
+        "--engine",
+        "-e",
+        help="Execution engine: auto, duckdb, or sqlite.",
+    ),
+    key: Optional[List[str]] = typer.Option(
+        None,
+        "--key",
+        "-k",
+        help="Identity column(s) for the diff (repeatable). Defaults to the key saved with the snapshot.",
+    ),
+    update: bool = typer.Option(
+        False,
+        "--update/--no-update",
+        help="After diffing, refresh the snapshot to the current result.",
+    ),
+) -> None:
+    """Show what changed in a query's result since its last cached run.
+
+    Re-runs the stored query (same targeting/params as `run`), then compares the
+    fresh result against the snapshot saved on the previous run. Rows are matched
+    by the snapshot's `--key` columns when it has them (so `diff` reports
+    *changed* rows with per-column before/after), or by whole-row identity
+    otherwise (added/removed only). Override the identity with `--key <col>`.
+    Pass `--update` to also refresh the snapshot to the current result, so the
+    next `diff` compares against *this* run. Distinct from BI: no dashboards,
+    just "what changed since last time?".
+    """
+    catalog = _load()
+    try:
+        query = catalog.get(name)
+    except QueryNotFoundError as exc:
+        raise _fail(str(exc))
+
+    # Load the baseline snapshot first: with nothing to compare against there is
+    # no diff to show, so guide the user to run the query once.
+    try:
+        snap = load_snapshot(name)
+    except SnapshotError as exc:
+        raise _fail(str(exc))
+    if snap is None:
+        raise _fail(
+            f"No snapshot for {name!r} yet. Run it once first "
+            f"([bold]quackpack run {name} ...[/bold]) to cache a result to diff against."
+        )
+
+    # Expand `{{ refs }}` exactly like run so composed queries diff too.
+    try:
+        sql = expand_query(catalog, name)
+    except TemplateError as exc:
+        raise _fail(str(exc))
+
+    preset_values: Optional[dict] = None
+    if preset is not None:
+        try:
+            preset_values = dict(query.get_preset(preset))
+        except PresetNotFoundError as exc:
+            raise _fail(str(exc))
+
+    expected_params = extract_params(sql)
+    params = _resolve_params(expected_params, param, base=preset_values)
+
+    try:
+        result = run_query(sql, db=db, file=file, params=params, engine=engine)
+    except EngineError as exc:
+        # A diff run still counts as a run for history purposes.
+        try:
+            catalog.record_run(query.name, ERROR)
+        except CatalogError:  # pragma: no cover - best-effort bookkeeping
+            pass
+        raise _fail(str(exc))
+
+    try:
+        catalog.record_run(query.name, OK)
+    except CatalogError:  # pragma: no cover - best-effort bookkeeping
+        pass
+
+    # An explicit --key overrides whatever the snapshot recorded; otherwise the
+    # diff uses the snapshot's stored key (possibly none -> whole-row identity).
+    override_key = [k.strip() for k in (key or []) if k and k.strip()]
+    diff_key = override_key or snap.key
+
+    try:
+        result_diff = diff_results(snap.as_result(), result, key=diff_key)
+    except SnapshotError as exc:
+        raise _fail(str(exc))
+
+    _render_diff(result_diff, name, taken=snap.taken)
+
+    if update:
+        try:
+            new_snap = Snapshot.from_result(
+                query.name, result, key=diff_key, params=params, engine=engine
+            )
+            save_snapshot(new_snap)
+            console.print("[dim]snapshot updated to current result.[/dim]")
+        except OSError as exc:  # pragma: no cover - filesystem edge
+            err_console.print(
+                f"[yellow]warning:[/yellow] could not update snapshot: {exc}"
+            )
 
 
 @app.command()
@@ -952,6 +1190,97 @@ def preset_rm(
         f"[green]removed preset[/green] [green]{preset.strip()}[/green] from "
         f"[bold cyan]{q.name}[/bold cyan]"
     )
+
+
+snapshot_app = typer.Typer(
+    name="snapshot",
+    help="Inspect or clear the cached result a query's `diff` compares against.",
+    no_args_is_help=True,
+    add_completion=False,
+    rich_markup_mode="markdown",
+)
+app.add_typer(snapshot_app, name="snapshot")
+
+
+@snapshot_app.command("show")
+def snapshot_show(
+    name: str = typer.Argument(..., help="Name of the saved query whose snapshot to show."),
+    fmt: str = typer.Option(
+        "table",
+        "--format",
+        "-F",
+        help=f"Output format: {', '.join(FORMATS)}.",
+    ),
+) -> None:
+    """Show the cached result (and its metadata) saved for a query.
+
+    Prints when the snapshot was taken, the identity `--key` recorded (if any),
+    the params it ran with, and the cached rows themselves — handy for seeing
+    exactly what the next `quackpack diff` will compare against.
+    """
+    if fmt.lower() not in FORMATS:
+        raise _fail(f"Unknown --format {fmt!r}. Choose one of: {', '.join(FORMATS)}.")
+
+    # Confirm the query exists so a typo'd name is a clean error, not "no snapshot".
+    catalog = _load()
+    try:
+        catalog.get(name)
+    except QueryNotFoundError as exc:
+        raise _fail(str(exc))
+
+    try:
+        snap = load_snapshot(name)
+    except SnapshotError as exc:
+        raise _fail(str(exc))
+    if snap is None:
+        raise _fail(
+            f"No snapshot for {name!r} yet. Run it once "
+            f"([bold]quackpack run {name} ...[/bold]) to cache a result."
+        )
+
+    if fmt.lower() == "table":
+        age = humanize_age(snap.taken)
+        keynote = ", ".join(snap.key) if snap.key else "(whole row)"
+        console.print(
+            f"snapshot [bold cyan]{name}[/bold cyan]  "
+            f"[dim]taken {age}· key: {keynote}· {snap.rowcount} "
+            f"{'row' if snap.rowcount == 1 else 'rows'}[/dim]"
+        )
+        if snap.params:
+            console.print(f"[dim]params: {_fmt_binding(snap.params)}[/dim]")
+    render(snap.as_result(), fmt, console)
+
+
+@snapshot_app.command("rm")
+def snapshot_rm(
+    name: str = typer.Argument(..., help="Name of the saved query whose snapshot to clear."),
+    yes: bool = typer.Option(
+        False, "--yes", "-y", help="Skip the confirmation prompt."
+    ),
+) -> None:
+    """Delete a query's cached snapshot (the next `run` re-seeds it)."""
+    try:
+        snap = load_snapshot(name)
+    except SnapshotError:
+        # A corrupt file is still deletable; treat it as present.
+        snap = Snapshot(query=name)
+    if snap is None:
+        console.print(f"No snapshot to remove for [bold cyan]{name}[/bold cyan].")
+        return
+
+    if not yes:
+        confirm = typer.confirm(f"Remove cached snapshot for {name!r}?")
+        if not confirm:
+            console.print("Aborted.")
+            raise typer.Exit()
+
+    removed = delete_snapshot(name)
+    if removed:
+        console.print(
+            f"[green]removed snapshot[/green] for [bold cyan]{name}[/bold cyan]"
+        )
+    else:  # pragma: no cover - race: file vanished between load and delete
+        console.print(f"No snapshot to remove for [bold cyan]{name}[/bold cyan].")
 
 
 if __name__ == "__main__":  # pragma: no cover

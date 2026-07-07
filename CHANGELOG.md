@@ -7,7 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Nothing yet.
+### Added
+
+- **Result snapshots & diff** (backlog #3): every successful `run` now caches its
+  result, and `diff <name>` re-runs the query to show what changed since that
+  cached run — rows **added**, rows **removed**, and (when you record identity
+  columns with `run --key <col>`) rows whose values **changed**, column by column
+  (`old → new`). Without a key, rows are matched on whole-row identity
+  (multiset-aware). `diff` takes the same targeting flags as `run`
+  (`--file`/`--db`, `--param`, `--preset`, `--engine`), plus `--key` to override
+  the recorded identity and `--update` to re-baseline the snapshot as you go.
+  `run --no-snapshot` opts out of caching; `snapshot show <name>` inspects the
+  cached result and `snapshot rm <name>` clears it. Snapshots live in
+  `~/.quackpack/snapshots/` as one small JSON per query, separate from the
+  catalog. A lightweight data-drift / regression spot check — not BI.
 
 ## [0.1.0] - 2026-07-05
 

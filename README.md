@@ -288,6 +288,59 @@ Notes:
   flags how many times you've run it — *"you've piped this 3× — worth stashing?"*.
 - Saved queries get their `:param` placeholders detected automatically, exactly like `add`.
 
+### Result snapshots & diff
+
+Every successful `run` quietly **caches its result**, so `quackpack diff <name>` can answer
+the one question that matters for a spot check: *what changed since the last time I ran
+this?* It re-runs the query and shows the delta — added rows, removed rows, and (when you
+record a `--key`) rows whose values **changed**, column by column. This is deliberately a
+lightweight data-drift / regression check, not BI: no dashboards, just the diff.
+
+```console
+# Run once to seed a snapshot. Pass --key so diff can spot *changed* rows
+# (not just added/removed). Omit --key to match on whole rows.
+$ quackpack run sales --file sales.csv --key id
+
+# ...data changes (a row edited, one dropped, one added)...
+$ quackpack diff sales --file sales.csv
+diff sales vs snapshot from 2h ago (key: id)
+┏━━━┳━━━━┳━━━━━━━━┳━━━━━━━━┓
+┃ + ┃ id ┃ region ┃ amount ┃
+┡━━━╇━━━━╇━━━━━━━━╇━━━━━━━━┩
+│ + │ 4  │ north  │ 50     │
+└───┴────┴────────┴────────┘
+┏━━━┳━━━━┳━━━━━━━━┳━━━━━━━━┓
+┃ - ┃ id ┃ region ┃ amount ┃
+┡━━━╇━━━━╇━━━━━━━━╇━━━━━━━━┩
+│ - │ 3  │ west   │ 75     │
+└───┴────┴────────┴────────┘
+┏━━━┳━━━━┳━━━━━━━━━━━━━━━━━━━┓
+┃ ~ ┃ id ┃ changes           ┃
+┡━━━╇━━━━╇━━━━━━━━━━━━━━━━━━━┩
+│ ~ │ 2  │ amount: 250 → 999 │
+└───┴────┴───────────────────┘
++1 added, -1 removed, ~1 changed
+
+# Re-baseline to the current result as you diff (so the *next* diff is clean):
+$ quackpack diff sales --file sales.csv --update
+
+# Override the identity for one diff, or inspect/clear the cache:
+$ quackpack diff sales --file sales.csv --key region
+$ quackpack snapshot show sales      # what the next diff compares against
+$ quackpack snapshot rm sales        # forget it (next run re-seeds)
+```
+
+Notes:
+
+- **`diff` takes the same targeting flags as `run`** (`--file` / `--db`, `--param`,
+  `--preset`, `--engine`), since it re-executes the query before comparing.
+- **Keyed vs whole-row.** With a `--key` (a column, or several for a composite key), rows
+  are matched by that identity and value changes are reported as `old → new`. Without one,
+  identity is the entire row, so a value change reads as a remove + an add.
+- **Opt out** of caching on a given run with `run --no-snapshot`.
+- Snapshots live in `~/.quackpack/snapshots/` (one small JSON per query, separate from
+  `pack.yaml` so cached data never bloats your catalog).
+
 ### Where queries live
 
 A single human-readable, diffable YAML file at `~/.quackpack/pack.yaml`. Set
