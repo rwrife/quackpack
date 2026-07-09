@@ -33,6 +33,7 @@ from pathlib import Path
 from typing import Any, List, Optional
 
 import typer
+import yaml
 from rich.console import Console
 from rich.syntax import Syntax
 from rich.table import Table
@@ -40,6 +41,14 @@ from rich.table import Table
 from . import __version__
 from .engine import EngineError, available_engines, run_query
 from .history import ERROR, OK, describe_last_run, humanize_age
+from .iox import (
+    IMPORT_STRATEGIES,
+    ImportError_,
+    build_export,
+    missing_names,
+    parse_export,
+    plan_import,
+)
 from .params import coerce_value, extract_params, split_param_key
 from .pipes import PipeLog
 from .render import FORMATS, render
@@ -1281,6 +1290,171 @@ def snapshot_rm(
         )
     else:  # pragma: no cover - race: file vanished between load and delete
         console.print(f"No snapshot to remove for [bold cyan]{name}[/bold cyan].")
+
+
+# --------------------------------------------------------------------------
+# Command: export / import  (backlog #5)
+# --------------------------------------------------------------------------
+
+
+def _dump_pack(document: dict) -> str:
+    """Serialise an export *document* to YAML matching the catalog's own style."""
+    return yaml.safe_dump(document, sort_keys=False, allow_unicode=True, width=100)
+
+
+@app.command("export")
+def export_cmd(
+    names: Optional[List[str]] = typer.Argument(
+        None,
+        metavar="[NAMES]...",
+        help="Only export these queries (by name). Omit to export the whole pack.",
+    ),
+    tag: Optional[str] = typer.Option(
+        None,
+        "--tag",
+        "-t",
+        help="Only export queries carrying this tag (combines with NAMES).",
+    ),
+    out: Optional[Path] = typer.Option(
+        None,
+        "--out",
+        "-o",
+        help="Write to this file instead of stdout.",
+    ),
+) -> None:
+    """Export selected queries to a standalone, sharable pack file.
+
+    Writes the chosen queries — **plus their presets and metadata, but not run
+    history or cached snapshots** — as a valid pack document. With no `NAMES`
+    and no `--tag` the whole pack is exported; otherwise the name arguments and
+    `--tag` filter combine (AND). Output goes to stdout by default so it pipes
+    straight to a file or a gist; use `-o FILE` to write it directly.
+
+    Because a `{{ ref }}` only survives a round trip if the referenced query is
+    also included, `export` warns (on stderr, non-fatally) when a selected query
+    references one you left out. Exporting an empty selection is still success.
+    """
+    catalog = _load()
+
+    # A name that doesn't exist is almost always a typo — fail loudly rather
+    # than silently export nothing for it.
+    if names:
+        unknown = missing_names(catalog, names)
+        if unknown:
+            raise _fail(f"No query named: {', '.join(unknown)}.")
+
+    selection = build_export(catalog, names, tag=tag)
+
+    # Warn (non-fatal) about templating refs that point outside the selection;
+    # the import on the other end would not be able to resolve them.
+    for qname in sorted(selection.dangling):
+        missing = ", ".join(selection.dangling[qname])
+        err_console.print(
+            f"[yellow]warning:[/yellow] {qname!r} references query(s) not in the "
+            f"export: {missing}"
+        )
+
+    text = _dump_pack(selection.document)
+
+    if out is not None:
+        try:
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_text(text, encoding="utf-8")
+        except OSError as exc:
+            raise _fail(f"Could not write {out}: {exc}")
+        plural = "query" if selection.count == 1 else "queries"
+        err_console.print(
+            f"[green]exported[/green] {selection.count} {plural} to "
+            f"[bold cyan]{out}[/bold cyan]"
+        )
+    else:
+        # The document itself is the only thing on stdout so it pipes cleanly;
+        # any human-facing note goes to stderr.
+        sys.stdout.write(text)
+
+
+@app.command("import")
+def import_cmd(
+    file: Path = typer.Argument(
+        ...,
+        help="An exported pack file to merge in (use `-` to read stdin).",
+    ),
+    strategy: str = typer.Option(
+        "skip",
+        "--strategy",
+        "-s",
+        help=f"On a name collision: {', '.join(IMPORT_STRATEGIES)} (default skip).",
+    ),
+    tag: Optional[str] = typer.Option(
+        None,
+        "--tag",
+        "-t",
+        help="Stamp this extra tag on every imported query (provenance).",
+    ),
+) -> None:
+    """Merge queries from an exported pack into your pack.
+
+    Reads a file written by `quackpack export` (or a whole `pack.yaml`; pass `-`
+    to read stdin) and merges its queries + presets into your library. The
+    default `--strategy skip` **never overwrites**: an incoming query whose name
+    already exists is left alone. `--strategy overwrite` replaces same-name
+    queries; `--strategy rename` imports collisions under a suffixed name
+    (`report-2`). `--tag from-alice` appends that tag to everything imported so
+    you can tell where a query came from. Prints an
+    `imported / skipped / renamed` summary.
+    """
+    if strategy not in IMPORT_STRATEGIES:
+        raise _fail(
+            f"Unknown --strategy {strategy!r}. "
+            f"Choose one of: {', '.join(IMPORT_STRATEGIES)}."
+        )
+
+    # Read the raw document: '-' means stdin, otherwise a file on disk.
+    if str(file) == "-":
+        raw_text = sys.stdin.read()
+        source = "stdin"
+    else:
+        try:
+            raw_text = file.read_text(encoding="utf-8")
+        except OSError as exc:
+            raise _fail(f"Could not read {file}: {exc}")
+        source = str(file)
+
+    try:
+        loaded = yaml.safe_load(raw_text)
+    except yaml.YAMLError as exc:
+        raise _fail(f"Malformed {source}: not valid YAML ({exc}).")
+
+    try:
+        incoming = parse_export(loaded, source=source)
+    except ImportError_ as exc:
+        raise _fail(str(exc))
+
+    catalog = _load()
+    plan = plan_import(catalog.names(), incoming, strategy=strategy, tag=tag)
+
+    # Apply the plan. Only the queries in `to_add` mutate the catalog; skipped
+    # names and the (unchanged) existing side are left as-is. We save once at
+    # the end so a big import is a single atomic write.
+    for q in plan.to_add:
+        catalog.add(q, overwrite=(q.name in plan.overwrite), save=False)
+    if plan.to_add:
+        catalog.save()
+
+    # Report. Renames/overwrites get an explicit line so the merge is auditable.
+    for original, new in sorted(plan.renamed.items()):
+        console.print(
+            f"[yellow]renamed[/yellow] {original} -> [bold cyan]{new}[/bold cyan] "
+            f"(name already existed)"
+        )
+    if plan.overwrite:
+        for name in sorted(plan.overwrite):
+            console.print(f"[yellow]overwrote[/yellow] [bold cyan]{name}[/bold cyan]")
+    if plan.skipped:
+        console.print(
+            f"[dim]skipped (name exists): {', '.join(sorted(plan.skipped))}[/dim]"
+        )
+    console.print(f"[green]{plan.summary()}[/green]")
 
 
 if __name__ == "__main__":  # pragma: no cover

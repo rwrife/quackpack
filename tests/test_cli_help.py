@@ -26,7 +26,7 @@ runner = CliRunner()
 # Every command that takes ``--help``. ``hello`` is the M1 smoke command; the
 # rest are the real workflow. Keeping this list explicit means a newly added
 # command with sloppy help markup trips the test until it's listed and clean.
-COMMANDS = ["hello", "add", "ls", "show", "search", "edit", "run", "pipe", "rm"]
+COMMANDS = ["hello", "add", "ls", "show", "search", "edit", "run", "pipe", "rm", "export", "import"]
 
 
 @pytest.fixture()

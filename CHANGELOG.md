@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Export / import & sharing packs** (backlog #5): `export [NAMES...] [--tag T] [-o FILE]`
+  writes a curated selection of queries — **plus their presets and metadata, but not run
+  history or cached snapshots** — as a standalone pack file (stdout by default, so it pipes
+  to a gist). Name args and `--tag` combine (AND); with neither, the whole pack is exported.
+  It warns (non-fatally) when a selected query has a `{{ ref }}` to one left out.
+  `import FILE [--strategy skip|overwrite|rename] [--tag T]` merges an exported pack (or a
+  whole `pack.yaml`; `-` reads stdin) into your library: the default `skip` never
+  overwrites, `overwrite` replaces same-name queries, and `rename` imports collisions as
+  `name-2`. `--tag from-alice` stamps provenance on everything imported, and a summary
+  reports `imported / skipped / renamed`. Round-trip safe: `export` then `import` into a
+  fresh `QUACKPACK_HOME` reproduces the queries and presets exactly. Local-first — no
+  server, no accounts.
 - **Result snapshots & diff** (backlog #3): every successful `run` now caches its
   result, and `diff <name>` re-runs the query to show what changed since that
   cached run — rows **added**, rows **removed**, and (when you record identity
