@@ -341,6 +341,48 @@ Notes:
 - Snapshots live in `~/.quackpack/snapshots/` (one small JSON per query, separate from
   `pack.yaml` so cached data never bloats your catalog).
 
+### Export / import & sharing packs
+
+Your `pack.yaml` is already one portable file, but `export` / `import` let you share a
+*curated subset* or *merge* someone else's queries **without hand-editing YAML or clobbering
+your library**. It's the natural next step after presets/templating/snapshots: quackpack
+becomes a *sharable* pantry while staying local-first — no server, no accounts.
+
+```console
+# Hand a teammate just your sales queries (presets + metadata come along;
+# run history and snapshots stay local). Defaults to stdout so it pipes anywhere:
+$ quackpack export --tag sales > sales-pack.yaml
+$ quackpack export top-customers churn -o share.yaml   # or pick queries by name
+$ quackpack export | gh gist create -f team-pack.yaml -  # straight to a gist
+
+# Pull a shared pack in. The default NEVER overwrites — collisions are skipped:
+$ quackpack import team-pack.yaml
+imported 7, skipped 2, renamed 0
+
+# Choose how name collisions resolve, and stamp provenance while you're at it:
+$ quackpack import team-pack.yaml --strategy overwrite      # replace same-name
+$ quackpack import team-pack.yaml --strategy rename         # keep both (name-2)
+$ quackpack import team-pack.yaml --tag from-alice          # tag everything
+$ cat team-pack.yaml | quackpack import -                   # read stdin
+```
+
+Notes:
+
+- **What travels:** the selected queries plus their **presets and metadata**. Run history
+  and cached snapshots are *local* state and are deliberately left behind — importing a pack
+  never grafts someone else's run counts onto your queries.
+- **Selection combines** name arguments and `--tag` with AND, so
+  `export foo bar --tag reports` exports only `foo`/`bar` that are also tagged `reports`.
+  With neither, the whole pack is exported.
+- **`--strategy` on import** (default `skip`): `skip` never overwrites, `overwrite` replaces
+  a same-name query, `rename` imports the incoming one as `name-2` (then `-3`…) so you keep
+  both. The summary always reports `imported / skipped / renamed`.
+- **Templating stays intact** across a round trip as long as the referenced query is
+  included; `export` warns (on stderr, non-fatal) if a selected query references one you
+  left out.
+- An export **is** a valid pack, so you can point `QUACKPACK_HOME` at one, or `import` a
+  whole `pack.yaml` directly.
+
 ### Where queries live
 
 A single human-readable, diffable YAML file at `~/.quackpack/pack.yaml`. Set
