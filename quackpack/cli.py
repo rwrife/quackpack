@@ -873,6 +873,74 @@ def diff(
 
 
 @app.command()
+def last(
+    name: str = typer.Argument(
+        ..., help="Name of the saved query whose cached result to re-show."
+    ),
+    fmt: str = typer.Option(
+        "table",
+        "--format",
+        "-F",
+        help=f"Output format: {', '.join(FORMATS)}.",
+    ),
+) -> None:
+    """Re-show a query's last cached result without re-running it.
+
+    `run` caches each result; `last` renders that cached snapshot straight from
+    disk — no engine spin-up, no data-file access, instant recall of "what did
+    that report say last time". It's the companion to `run`/`diff`: `run`
+    computes, `diff` compares, `last` remembers.
+
+    A provenance header notes how long ago the snapshot was captured (and the
+    params/preset it ran with, if recorded) so a stale cache is never mistaken
+    for a fresh run. For `csv`/`json` that header goes to stderr, keeping stdout
+    clean for piping. Because `last` only reads the cache, target/param flags
+    (`--file`/`--db`/`--param`) are irrelevant and are rejected as a usage error.
+    """
+    if fmt.lower() not in FORMATS:
+        raise _fail(f"Unknown --format {fmt!r}. Choose one of: {', '.join(FORMATS)}.")
+
+    # Confirm the query exists so a typo'd name is a clean error, not "no cache".
+    catalog = _load()
+    try:
+        catalog.get(name)
+    except QueryNotFoundError as exc:
+        raise _fail(str(exc))
+
+    try:
+        snap = load_snapshot(name)
+    except SnapshotError as exc:
+        raise _fail(str(exc))
+    if snap is None:
+        raise _fail(
+            f"no cached result for {name!r} \u2014 run it first "
+            f"(or run without --no-snapshot)"
+        )
+
+    # Provenance line: capture age + params, so a stale cache is never silently
+    # mistaken for a fresh run. Table -> stdout console; csv/json -> stderr so
+    # the piped payload stays clean and machine-readable.
+    age = humanize_age(snap.taken)
+    provenance = f"[dim]cached {age}[/dim]"
+    if snap.params:
+        provenance += f"  [dim]params: {_fmt_binding(snap.params)}[/dim]"
+    header_console = console if fmt.lower() == "table" else err_console
+    if fmt.lower() == "table":
+        keynote = ", ".join(snap.key) if snap.key else "(whole row)"
+        header_console.print(
+            f"last [bold cyan]{name}[/bold cyan]  "
+            f"[dim]cached {age}\u00b7 key: {keynote}\u00b7 {snap.rowcount} "
+            f"{'row' if snap.rowcount == 1 else 'rows'}[/dim]"
+        )
+        if snap.params:
+            header_console.print(f"[dim]params: {_fmt_binding(snap.params)}[/dim]")
+    else:
+        header_console.print(provenance)
+
+    render(snap.as_result(), fmt, console)
+
+
+@app.command()
 def pipe(
     query: Optional[str] = typer.Option(
         None, "--query", "-q", help="The SQL to run (inline); defaults to stdin."
