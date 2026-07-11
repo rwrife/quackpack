@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`last` — recall the cached result** (backlog #8): `quackpack last <name>` re-shows the
+  result cached by the previous `run`, straight from the snapshot — **no engine spin-up, no
+  data-file access**. It's the companion to `run`/`diff`: `run` computes, `diff` compares,
+  `last` remembers. A provenance header notes the capture age (`cached Nd ago`) and the
+  params it ran with, so a stale cache is never mistaken for a fresh run; for `--format
+  csv|json` that header goes to stderr so stdout stays clean for piping. `--file`/`--db`/
+  `--param` are irrelevant to a cache read and are rejected as a usage error, and a missing
+  snapshot exits `1` with `error: no cached result for '<name>' — run it first`.
 - **Export / import & sharing packs** (backlog #5): `export [NAMES...] [--tag T] [-o FILE]`
   writes a curated selection of queries — **plus their presets and metadata, but not run
   history or cached snapshots** — as a standalone pack file (stdout by default, so it pipes

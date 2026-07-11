@@ -341,6 +341,37 @@ Notes:
 - Snapshots live in `~/.quackpack/snapshots/` (one small JSON per query, separate from
   `pack.yaml` so cached data never bloats your catalog).
 
+### Recall the last result (`last`)
+
+`run` computes, `diff` compares, **`last` remembers.** `quackpack last <name>` re-shows the
+result cached by the previous `run` — straight from the snapshot, with **no engine spin-up
+and no data-file access**. Instant recall of "what did that report say last time", even if
+the source parquet is huge, slow, or currently unreachable.
+
+```console
+$ quackpack last sales
+last sales  cached 2h ago· key: id· 2 rows
+┏━━━━┳━━━━━━━━┳━━━━━━━━┓
+┃ id ┃ region ┃ amount ┃
+┡━━━━╇━━━━━━━━╇━━━━━━━━┩
+│ 1  │ west   │ 100    │
+│ 2  │ east   │ 250    │
+└────┴────────┴────────┘
+
+# Same renderers as run — pipe csv/json straight out (the provenance line goes
+# to stderr for these, so stdout stays clean):
+$ quackpack last sales --format json | jq '.[].region'
+```
+
+Notes:
+
+- **Provenance, always.** A header notes how long ago the snapshot was captured (`cached Nd
+  ago`) and the params it ran with, so a stale cache is never mistaken for a fresh run.
+- **No engine, no data file.** `last` only reads the cache; `--file` / `--db` / `--param`
+  are irrelevant and are **rejected as a usage error** to avoid the illusion of a fresh run.
+- **No cache?** If the query was never run (or the last run used `--no-snapshot`), `last`
+  exits `1` with `error: no cached result for '<name>' — run it first`.
+
 ### Export / import & sharing packs
 
 Your `pack.yaml` is already one portable file, but `export` / `import` let you share a
