@@ -51,7 +51,12 @@ from .iox import (
 )
 from .params import coerce_value, extract_params, split_param_key
 from .pipes import PipeLog
-from .render import FORMATS, render
+from .manifest import (
+    MANIFEST_FORMATS,
+    build_manifest,
+    tool_entry,
+)
+from .render import FORMATS, render, render_json_envelope
 from .snapshots import (
     DiffResult,
     Snapshot,
@@ -290,11 +295,25 @@ def _prompt_for_missing(missing: List[str]) -> dict:
     return out
 
 
+def _env_no_input() -> bool:
+    """True when ``QUACKPACK_NO_INPUT`` is set to a truthy value.
+
+    Belt-and-suspenders for agent sandboxes: an agent can export the env var
+    once instead of threading ``--no-input`` through every call. Any value other
+    than empty / ``0`` / ``false`` / ``no`` (case-insensitive) counts as on.
+    """
+    raw = os.environ.get("QUACKPACK_NO_INPUT")
+    if raw is None:
+        return False
+    return raw.strip().lower() not in ("", "0", "false", "no", "off")
+
+
 def _resolve_params(
     declared: List[str],
     supplied: Optional[List[str]],
     *,
     base: Optional[dict] = None,
+    no_input: bool = False,
 ) -> dict:
     """Merge ``--param`` flags with declared ``:param`` names, prompting for gaps.
 
@@ -304,11 +323,20 @@ def _resolve_params(
     (real TTY) or warn and let the engine raise a precise binding error
     (pipes/CI). Shared by ``run`` and ``pipe`` so both treat parameters
     identically.
+
+    When *no_input* is set (``--no-input`` / ``QUACKPACK_NO_INPUT``) we never
+    prompt: any missing required param is a hard error (clean ``error:`` on
+    stderr, exit 1) so an agent's call fails fast instead of hanging.
     """
     params: dict[str, Any] = dict(base or {})
     params.update(_parse_params(supplied))
     missing = [p for p in declared if p not in params]
     if missing:
+        if no_input:
+            raise _fail(
+                f"missing required param(s): {', '.join(missing)} "
+                f"(pass --param {missing[0]}=... )"
+            )
         if _stdin_is_interactive():
             params.update(_prompt_for_missing(missing))
         else:
@@ -648,6 +676,24 @@ def run(
         "--snapshot/--no-snapshot",
         help="Cache this result so `quackpack diff` can compare later runs.",
     ),
+    no_input: bool = typer.Option(
+        False,
+        "--no-input",
+        help=(
+            "Never prompt for missing params (agent/CI mode): a missing required "
+            "param exits 1 with an `error:` on stderr. Also enabled by "
+            "`QUACKPACK_NO_INPUT=1`."
+        ),
+    ),
+    envelope: bool = typer.Option(
+        False,
+        "--envelope",
+        help=(
+            "With `--format json`, emit the documented `{columns, rows, rowcount}` "
+            "envelope instead of an array of row objects (auto-on with "
+            "`--no-input`)."
+        ),
+    ),
 ) -> None:
     """Run a stored query against a data target and render the results.
 
@@ -699,7 +745,10 @@ def run(
     # is prompted for when we have a real TTY; otherwise (pipes/CI) we warn and
     # let the engine raise a precise binding error if the param is truly needed.
     expected_params = extract_params(sql)
-    params = _resolve_params(expected_params, param, base=preset_values)
+    effective_no_input = no_input or _env_no_input()
+    params = _resolve_params(
+        expected_params, param, base=preset_values, no_input=effective_no_input
+    )
 
     try:
         result = run_query(
@@ -742,7 +791,97 @@ def run(
                 f"[yellow]warning:[/yellow] could not save snapshot: {exc}"
             )
 
-    render(result, fmt, console)
+    # Structured output: a JSON envelope is the agent/MCP-friendly surface.
+    # Auto-enable it under --no-input (the machine path) so an agent that just
+    # passes `--format json --no-input` gets the self-describing shape without a
+    # second flag; explicit `--envelope` opts in independently.
+    if fmt.lower() == "json" and (envelope or effective_no_input):
+        console.print(render_json_envelope(result), markup=False, highlight=False)
+    else:
+        render(result, fmt, console)
+
+
+# --------------------------------------------------------------------------
+# Commands: tools / describe  (backlog #6 / issue #26 — agent/MCP manifest)
+# --------------------------------------------------------------------------
+
+
+def _emit_manifest(payload: Any) -> None:
+    """Print a manifest *payload* as compact-but-readable JSON on stdout.
+
+    Goes through the stdlib so the output is plain (no Rich markup) and pipes
+    cleanly into ``jq`` or an MCP shim.
+    """
+    import json as _json
+
+    sys.stdout.write(
+        _json.dumps(payload, ensure_ascii=False, indent=2, default=str) + "\n"
+    )
+
+
+@app.command()
+def tools(
+    tag: Optional[str] = typer.Option(
+        None, "--tag", "-t", help="Only include queries carrying this tag."
+    ),
+    fmt: str = typer.Option(
+        "json",
+        "--format",
+        "-F",
+        help=f"Manifest shape: {', '.join(MANIFEST_FORMATS)}.",
+    ),
+) -> None:
+    """Emit a machine-readable **tool manifest** of your saved queries.
+
+    quackpack's pack is a catalog of named, parameterized queries — i.e. a set
+    of callable tools an agent / MCP layer can discover and invoke. This prints
+    that manifest so a thin shim can enumerate every query with its description
+    and a params schema derived from its `:param` placeholders (name, type,
+    required, and any preset-provided default).
+
+    `--format json` (default) emits a compact custom shape
+    (`{name, description, params}`); `--format jsonschema` emits JSON-Schema
+    `inputSchema` objects (`{name, description, inputSchema}`) suitable for
+    dropping straight into an MCP tool definition. `--tag` filters the manifest.
+    Pair with `quackpack run <name> --format json --no-input` for the invocation
+    side of the contract.
+    """
+    if fmt.lower() not in MANIFEST_FORMATS:
+        raise _fail(
+            f"Unknown --format {fmt!r}. Choose one of: {', '.join(MANIFEST_FORMATS)}."
+        )
+    catalog = _load()
+    manifest = build_manifest(catalog, tag=tag, fmt=fmt.lower())
+    _emit_manifest(manifest)
+
+
+@app.command()
+def describe(
+    name: str = typer.Argument(..., help="Name of the saved query to describe."),
+    fmt: str = typer.Option(
+        "json",
+        "--format",
+        "-F",
+        help=f"Manifest shape: {', '.join(MANIFEST_FORMATS)}.",
+    ),
+) -> None:
+    """Print the single-tool manifest entry for one saved query.
+
+    Handy for lazy, per-tool discovery: an agent that already knows a query's
+    name can fetch just its schema instead of the whole `tools` manifest. The
+    output is exactly that query's entry in `tools` (same `--format` shapes:
+    `json` or `jsonschema`).
+    """
+    if fmt.lower() not in MANIFEST_FORMATS:
+        raise _fail(
+            f"Unknown --format {fmt!r}. Choose one of: {', '.join(MANIFEST_FORMATS)}."
+        )
+    catalog = _load()
+    try:
+        query = catalog.get(name)
+    except QueryNotFoundError as exc:
+        raise _fail(str(exc))
+    _emit_manifest(tool_entry(query, fmt=fmt.lower()))
 
 
 @app.command()

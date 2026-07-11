@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Agent / MCP tool manifest** (backlog #6): quackpack now exposes your pack as callable
+  tools for an agent / MCP layer, without becoming an always-on server. `quackpack tools
+  [--tag T] [--format json|jsonschema]` prints a manifest of every saved query with its
+  `--desc` and a params schema derived from its `:param` placeholders (name, `int`/`float`/
+  `str` type matching the run engine's coercions, required flag, and any preset-provided
+  default); `jsonschema` emits JSON-Schema `inputSchema` objects. `quackpack describe <name>
+  [--format ...]` returns the single-tool entry for lazy per-tool discovery. The `run`
+  command gains a non-interactive contract for agents/CI: `--no-input` (or
+  `QUACKPACK_NO_INPUT=1`) never prompts — a missing required param exits `1` with a clean
+  `error:` on stderr — and with `--format json` it (or `--envelope`) emits the documented
+  `{"columns": [...], "rows": [...], "rowcount": N}` envelope; plain `--format json` keeps the
+  classic array-of-objects shape. An illustrative, dependency-light `examples/mcp_shim.py`
+  shows wiring the manifest + run to an MCP server (demonstration, not a runtime dep). README
+  gains an "Agent / MCP integration" section.
 - **`last` — recall the cached result** (backlog #8): `quackpack last <name>` re-shows the
   result cached by the previous `run`, straight from the snapshot — **no engine spin-up, no
   data-file access**. It's the companion to `run`/`diff`: `run` computes, `diff` compares,

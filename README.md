@@ -414,6 +414,63 @@ Notes:
 - An export **is** a valid pack, so you can point `QUACKPACK_HOME` at one, or `import` a
   whole `pack.yaml` directly.
 
+### Agent / MCP integration (`tools`, `describe`, `--no-input`)
+
+Your pack is already a catalog of **named, parameterized queries** — i.e. a set of callable
+tools an AI assistant / [MCP](https://modelcontextprotocol.io) layer can discover and invoke.
+quackpack exposes that as a stable JSON surface **without** becoming an always-on server: it
+stays a local CLI; a thin shim (or any agent) wraps it.
+
+**Discover** the pack as a tool manifest:
+
+```console
+$ quackpack tools --format json         # compact custom shape
+$ quackpack tools --format jsonschema    # JSON-Schema inputSchema per tool
+$ quackpack tools --tag sales            # filter by tag
+$ quackpack describe big --format jsonschema   # one tool's schema
+```
+
+Each entry carries the query `name`, its `--desc`, and a params schema derived from the
+`:param` placeholders: `name`, `type` (`int`/`float`/`str`, matching the run engine's
+coercions), whether it's `required`, and any preset-provided `default`. A param is optional
+when a preset supplies a default for it, required otherwise.
+
+```json
+{
+  "name": "big",
+  "description": "Orders at or above a floor",
+  "inputSchema": {
+    "type": "object",
+    "properties": { "min": { "type": "integer", "default": 100 } },
+    "required": [],
+    "additionalProperties": false
+  }
+}
+```
+
+**Invoke** non-interactively — the agent side of the contract:
+
+```console
+$ quackpack run big --file sales.csv --param min=300 --format json --no-input
+{
+  "columns": ["order_date", "region", "product", "amount"],
+  "rows": [["2026-06-02", "west", "widget", 420]],
+  "rowcount": 1
+}
+```
+
+- `--no-input` (or `QUACKPACK_NO_INPUT=1` for sandboxes) **never prompts**: a missing
+  required param exits `1` with a clean `error:` on stderr.
+- With `--format json`, `--no-input` (or `--envelope`) emits the documented
+  `{"columns": [...], "rows": [...], "rowcount": N}` envelope — self-describing even for an
+  empty result. Plain `--format json` (no `--no-input`/`--envelope`) still emits the classic
+  array-of-row-objects shape for `jq`-style piping.
+
+See **[`examples/mcp_shim.py`](examples/mcp_shim.py)** for an illustrative ~90-line stdlib
+shim that wraps the manifest + non-interactive run as MCP tools (`python examples/mcp_shim.py
+--dry-run` previews the tools without needing the `mcp` package). It's a demonstration, not a
+runtime dependency.
+
 ### Where queries live
 
 A single human-readable, diffable YAML file at `~/.quackpack/pack.yaml`. Set
