@@ -21,7 +21,14 @@ from rich.table import Table
 
 from .engine import QueryResult
 
-__all__ = ["FORMATS", "render", "render_table", "render_csv", "render_json"]
+__all__ = [
+    "FORMATS",
+    "render",
+    "render_table",
+    "render_csv",
+    "render_json",
+    "render_json_envelope",
+]
 
 FORMATS = ("table", "csv", "json")
 
@@ -79,6 +86,24 @@ def render_json(result: QueryResult) -> str:
         dict(zip(result.columns, row)) for row in result.rows
     ]
     return json.dumps(records, default=_json_default, ensure_ascii=False, indent=2)
+
+
+def render_json_envelope(result: QueryResult) -> str:
+    """Return *result* as the documented ``{columns, rows, rowcount}`` envelope.
+
+    This is the agent/MCP-friendly structured surface (issue #26): a stable JSON
+    object with the column names, the rows as arrays (positional, matching
+    ``columns``), and an explicit ``rowcount``. Unlike :func:`render_json`'s
+    array-of-objects shape, the envelope is self-describing (columns are always
+    present, even for an empty result) so a thin shim can wrap it without
+    guessing the schema from the first row.
+    """
+    payload = {
+        "columns": list(result.columns),
+        "rows": [list(row) for row in result.rows],
+        "rowcount": result.rowcount,
+    }
+    return json.dumps(payload, default=_json_default, ensure_ascii=False, indent=2)
 
 
 def render(result: QueryResult, fmt: str, console: Console) -> None:
