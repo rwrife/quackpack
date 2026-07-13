@@ -39,7 +39,7 @@ from rich.syntax import Syntax
 from rich.table import Table
 
 from . import __version__
-from .engine import EngineError, available_engines, run_query
+from .engine import EngineError, available_engines, explain_query, run_query
 from .history import ERROR, OK, describe_last_run, humanize_age
 from .iox import (
     IMPORT_STRATEGIES,
@@ -49,6 +49,7 @@ from .iox import (
     parse_export,
     plan_import,
 )
+from .lints import lint_sql
 from .params import coerce_value, extract_params, split_param_key
 from .pipes import PipeLog
 from .manifest import (
@@ -799,6 +800,122 @@ def run(
         console.print(render_json_envelope(result), markup=False, highlight=False)
     else:
         render(result, fmt, console)
+
+
+# --------------------------------------------------------------------------
+# Commands: tools / describe  (backlog #6 / issue #26 — agent/MCP manifest)
+# --------------------------------------------------------------------------
+
+
+@app.command()
+def explain(
+    name: str = typer.Argument(..., help="Name of the saved query to explain."),
+    db: Optional[Path] = typer.Option(
+        None, "--db", help="Database file to query (DuckDB or SQLite)."
+    ),
+    file: Optional[Path] = typer.Option(
+        None,
+        "--file",
+        "-f",
+        help="Data file to expose to the query (CSV / Parquet / SQLite).",
+    ),
+    param: Optional[List[str]] = typer.Option(
+        None,
+        "--param",
+        "-p",
+        help="Bind a :param as key=value (repeatable).",
+    ),
+    preset: Optional[str] = typer.Option(
+        None,
+        "--preset",
+        "-P",
+        help="Apply a saved preset's param values as a base (--param overrides).",
+    ),
+    engine: str = typer.Option(
+        "auto",
+        "--engine",
+        "-e",
+        help="Execution engine: auto, duckdb, or sqlite.",
+    ),
+    analyze: bool = typer.Option(
+        False,
+        "--analyze",
+        help="Use EXPLAIN ANALYZE — actually runs the query and reports timing.",
+    ),
+    no_lint: bool = typer.Option(
+        False,
+        "--no-lint",
+        help="Suppress the static lint warnings (plan only).",
+    ),
+    no_input: bool = typer.Option(
+        False,
+        "--no-input",
+        help=(
+            "Never prompt for missing params (agent/CI mode): a missing required "
+            "param exits 1. Also enabled by `QUACKPACK_NO_INPUT=1`."
+        ),
+    ),
+) -> None:
+    """Show a stored query's plan (and cheap static lints) without keeping results.
+
+    A read-only feasibility/perf check: `explain` binds `:param`s exactly like
+    `run` (including `--preset` and interactive prompts), then wraps the SQL in
+    DuckDB's `EXPLAIN` and renders the plan. Add `--analyze` to run the query
+    and include real timings (`EXPLAIN ANALYZE`). Before the plan, lightweight
+    static lints — e.g. a broad `SELECT *` or an unfiltered full-file scan — are
+    surfaced to stderr (non-fatal; silence them with `--no-lint`). The SQLite
+    fallback degrades to `EXPLAIN QUERY PLAN`.
+    """
+    catalog = _load()
+    try:
+        catalog.get(name)
+    except QueryNotFoundError as exc:
+        raise _fail(str(exc))
+
+    try:
+        sql = expand_query(catalog, name)
+    except TemplateError as exc:
+        raise _fail(str(exc))
+
+    query = catalog.get(name)
+    preset_values: Optional[dict] = None
+    if preset is not None:
+        try:
+            preset_values = dict(query.get_preset(preset))
+        except PresetNotFoundError as exc:
+            raise _fail(str(exc))
+
+    expected_params = extract_params(sql)
+    effective_no_input = no_input or _env_no_input()
+    params = _resolve_params(
+        expected_params, param, base=preset_values, no_input=effective_no_input
+    )
+
+    # Static lints first — they don't need the engine and give fast feedback
+    # even if EXPLAIN itself fails. Advisory only; never abort on them.
+    if not no_lint:
+        for warning in lint_sql(sql):
+            err_console.print(f"[yellow]lint:[/yellow] {warning}")
+
+    try:
+        result = explain_query(
+            sql,
+            db=db,
+            file=file,
+            params=params,
+            engine=engine,
+            analyze=analyze,
+        )
+    except EngineError as exc:
+        raise _fail(str(exc))
+
+    if result.engine == "sqlite":
+        err_console.print(
+            "[yellow]note:[/yellow] SQLite fallback — showing EXPLAIN QUERY PLAN "
+            "(no ANALYZE timings)."
+        )
+
+    console.print(result.plan or "(empty plan)", markup=False, highlight=False)
 
 
 # --------------------------------------------------------------------------
