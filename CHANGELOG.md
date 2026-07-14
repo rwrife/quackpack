@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`explain` — query plan + static lints** (backlog #12 / issue #31): `quackpack explain
+  <name> [--file/--db ...] [--param ...]` renders DuckDB's `EXPLAIN` plan for a saved query
+  without keeping its results — a fast, read-only feasibility/perf check before you commit a
+  query to your library. `--analyze` switches to `EXPLAIN ANALYZE` (actually executes and
+  reports timings). Cheap static lints surface common footguns to stderr (non-fatal): a
+  broad `SELECT *` projection and unfiltered full-file scans (`--no-lint` silences them).
+  Params bind exactly like `run` (presets, interactive prompts, and `--no-input` honoured),
+  and the SQLite fallback degrades gracefully to `EXPLAIN QUERY PLAN`. README documents the
+  command.
 - **Agent / MCP tool manifest** (backlog #6): quackpack now exposes your pack as callable
   tools for an agent / MCP layer, without becoming an always-on server. `quackpack tools
   [--tag T] [--format json|jsonschema]` prints a manifest of every saved query with its

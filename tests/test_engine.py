@@ -18,7 +18,7 @@ from pathlib import Path
 import pytest
 
 from quackpack import engine
-from quackpack.engine import EngineError, QueryResult, run_query
+from quackpack.engine import EngineError, QueryResult, explain_query, run_query
 
 pytestmark = pytest.mark.filterwarnings("ignore")
 
@@ -234,3 +234,48 @@ def test_available_engines_includes_sqlite() -> None:
 def test_auto_prefers_duckdb_when_present() -> None:
     res = run_query("select 1 as x", engine="auto")
     assert res.rows == [(1,)]
+
+
+# --------------------------------------------------------------------------
+# EXPLAIN (issue #31)
+# --------------------------------------------------------------------------
+
+
+def test_explain_empty_query_rejected() -> None:
+    with pytest.raises(EngineError):
+        explain_query("  ")
+
+
+def test_explain_sqlite_query_plan(sales_csv: Path) -> None:
+    res = explain_query(
+        "select region, sum(amount) from sales group by region",
+        file=sales_csv,
+        engine="sqlite",
+    )
+    assert res.engine == "sqlite"
+    assert res.analyzed is False
+    assert res.plan  # non-empty plan text
+
+
+@pytest.mark.skipif(not engine.DUCKDB_AVAILABLE, reason="duckdb not installed")
+def test_explain_duckdb_plan_with_param(sales_csv: Path) -> None:
+    res = explain_query(
+        "select region from sales where amount > :min",
+        file=sales_csv,
+        params={"min": 90},
+        engine="duckdb",
+    )
+    assert res.engine == "duckdb"
+    assert res.plan
+
+
+@pytest.mark.skipif(not engine.DUCKDB_AVAILABLE, reason="duckdb not installed")
+def test_explain_analyze_flag(sales_csv: Path) -> None:
+    res = explain_query(
+        "select region, sum(amount) from sales group by region",
+        file=sales_csv,
+        engine="duckdb",
+        analyze=True,
+    )
+    assert res.analyzed is True
+    assert res.plan

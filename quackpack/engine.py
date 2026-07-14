@@ -37,7 +37,9 @@ from .params import to_duckdb_placeholders
 __all__ = [
     "EngineError",
     "QueryResult",
+    "ExplainResult",
     "run_query",
+    "explain_query",
     "available_engines",
     "DUCKDB_AVAILABLE",
 ]
@@ -57,6 +59,20 @@ class QueryResult:
     @property
     def rowcount(self) -> int:
         return len(self.rows)
+
+
+@dataclass
+class ExplainResult:
+    """The outcome of an ``EXPLAIN``: the plan text plus the engine used.
+
+    ``analyzed`` is True when the plan came from ``EXPLAIN ANALYZE`` (which
+    actually executes the query and includes timing). ``engine`` records which
+    backend produced the plan so callers can note SQLite's degraded form.
+    """
+
+    plan: str
+    engine: str
+    analyzed: bool = False
 
 
 # --------------------------------------------------------------------------
@@ -189,6 +205,36 @@ def _resolve_engine(engine: str) -> str:
     raise EngineError(f"Unknown engine {engine!r}. Choose 'auto', 'duckdb', or 'sqlite'.")
 
 
+def explain_query(
+    sql: str,
+    *,
+    db: Optional[str | Path] = None,
+    file: Optional[str | Path] = None,
+    params: Optional[Mapping[str, Any]] = None,
+    engine: str = "auto",
+    analyze: bool = False,
+) -> ExplainResult:
+    """Return the query plan for *sql* without returning its result rows.
+
+    Mirrors :func:`run_query`'s target/param handling but wraps the SQL in
+    ``EXPLAIN`` (or ``EXPLAIN ANALYZE`` when *analyze* is set). DuckDB produces
+    a rich physical plan; the SQLite fallback degrades to ``EXPLAIN QUERY
+    PLAN`` (and ignores *analyze*, which it doesn't support the same way).
+    """
+    sql = (sql or "").strip()
+    if not sql:
+        raise EngineError("Refusing to explain an empty query.")
+
+    chosen = _resolve_engine(engine)
+    db_path = _as_path(db)
+    file_path = _as_path(file)
+    params = dict(params or {})
+
+    if chosen == "duckdb":
+        return _explain_duckdb(sql, db_path, file_path, params, analyze)
+    return _explain_sqlite(sql, db_path, file_path, params)
+
+
 # --------------------------------------------------------------------------
 # DuckDB backend
 # --------------------------------------------------------------------------
@@ -275,6 +321,64 @@ def _execute_duckdb(con: Any, sql: str, params: Mapping[str, Any]) -> QueryResul
     columns = [d[0] for d in description]
     rows = [tuple(r) for r in cur.fetchall()]
     return QueryResult(columns=columns, rows=rows)
+
+
+def _explain_duckdb(
+    sql: str,
+    db_path: Optional[Path],
+    file_path: Optional[Path],
+    params: Mapping[str, Any],
+    analyze: bool,
+) -> ExplainResult:
+    assert _duckdb is not None
+
+    if db_path is not None:
+        _require_exists(db_path, "Database")
+        try:
+            con = _duckdb.connect(str(db_path), read_only=True)
+        except Exception as exc:  # pragma: no cover - driver/edge errors
+            raise EngineError(f"Could not open DuckDB database {db_path}: {exc}")
+    else:
+        con = _duckdb.connect(database=":memory:")
+
+    try:
+        if file_path is not None:
+            _attach_file_duckdb(con, file_path)
+        keyword = "EXPLAIN ANALYZE" if analyze else "EXPLAIN"
+        explain_sql = f"{keyword} {sql}"
+        if params:
+            explain_sql = to_duckdb_placeholders(explain_sql)
+            try:
+                cur = con.execute(explain_sql, dict(params))
+            except Exception as exc:
+                raise EngineError(_format_sql_error(exc))
+        else:
+            try:
+                cur = con.execute(explain_sql)
+            except Exception as exc:
+                raise EngineError(_format_sql_error(exc))
+        rows = cur.fetchall()
+    finally:
+        con.close()
+
+    plan = _render_explain_rows(rows)
+    return ExplainResult(plan=plan, engine="duckdb", analyzed=analyze)
+
+
+def _render_explain_rows(rows: Iterable[tuple]) -> str:
+    """Flatten EXPLAIN output rows into a single plan string.
+
+    DuckDB returns rows like ``(explain_key, explain_value)``; the plan text is
+    the last column. SQLite's ``EXPLAIN QUERY PLAN`` returns wider rows we
+    join instead. We select the last cell per row, which is the plan body in
+    both engines' EXPLAIN forms.
+    """
+    parts: list[str] = []
+    for row in rows:
+        if not row:
+            continue
+        parts.append(str(row[-1]))
+    return "\n".join(parts).strip()
 
 
 # --------------------------------------------------------------------------
@@ -449,6 +553,66 @@ def _execute_sqlite(con: sqlite3.Connection, sql: str, params: Mapping[str, Any]
     columns = [d[0] for d in description]
     rows = [tuple(r) for r in cur.fetchall()]
     return QueryResult(columns=columns, rows=rows)
+
+
+def _explain_sqlite(
+    sql: str,
+    db_path: Optional[Path],
+    file_path: Optional[Path],
+    params: Mapping[str, Any],
+) -> ExplainResult:
+    """Degrade to ``EXPLAIN QUERY PLAN`` for the SQLite fallback.
+
+    SQLite has no ``EXPLAIN ANALYZE``; ``EXPLAIN QUERY PLAN`` gives a compact,
+    human-useful plan. We reuse the same target-attach logic as a normal run by
+    delegating the connection setup through ``_run_sqlite``-style handling.
+    """
+    sqlite_target: Optional[Path] = None
+    csv_to_load: Optional[Path] = None
+
+    if db_path is not None:
+        _require_exists(db_path, "Database")
+        sqlite_target = db_path
+    if file_path is not None:
+        _require_exists(file_path, "File")
+        kind = _classify_file(file_path)
+        if kind == "sqlite":
+            if sqlite_target is None:
+                sqlite_target = file_path
+        elif kind == "csv":
+            csv_to_load = file_path
+        else:  # parquet
+            raise EngineError(
+                "The SQLite engine can't read Parquet files. "
+                "Use DuckDB (the default) for Parquet, or pass a CSV/SQLite file."
+            )
+
+    try:
+        con = sqlite3.connect(str(sqlite_target) if sqlite_target else ":memory:")
+    except sqlite3.Error as exc:  # pragma: no cover
+        raise EngineError(f"Could not open SQLite database: {exc}")
+
+    try:
+        if (
+            file_path is not None
+            and _classify_file(file_path) == "sqlite"
+            and sqlite_target is not None
+            and file_path != sqlite_target
+        ):
+            con.execute("ATTACH DATABASE ? AS extra", [str(file_path)])
+        if csv_to_load is not None:
+            _load_csv_into_sqlite(con, csv_to_load, _view_name(csv_to_load))
+        explain_sql = f"EXPLAIN QUERY PLAN {sql}"
+        try:
+            cur = con.execute(explain_sql, dict(params)) if params else con.execute(explain_sql)
+        except sqlite3.Error as exc:
+            raise EngineError(_format_sql_error(exc))
+        rows = cur.fetchall()
+    finally:
+        con.close()
+
+    plan = _render_explain_rows(rows)
+    return ExplainResult(plan=plan, engine="sqlite", analyzed=False)
 
 
 # --------------------------------------------------------------------------

@@ -180,6 +180,39 @@ Notes:
   SQLite fallback ingests CSVs (inferring numeric columns) and reads `.sqlite` files;
   Parquet requires DuckDB.
 
+### Inspect the plan (`explain`)
+
+Before you commit a query to your library — or when a `run` feels slow — `quackpack explain
+<name>` shows DuckDB's query plan **without keeping the results**, plus a couple of cheap
+static lints. It's a fast read-only "is this query dumb?" check:
+
+```console
+# Physical plan for a saved query against a CSV target:
+$ quackpack explain top-regions --file sales.csv
+
+# Bind :params exactly like `run` (presets + interactive prompts work too):
+$ quackpack explain big --file sales.csv --param min=90
+
+# Actually run it and report timings (EXPLAIN ANALYZE):
+$ quackpack explain big --file sales.csv --param min=90 --analyze
+
+# SQLite fallback degrades to EXPLAIN QUERY PLAN:
+$ quackpack explain top-regions --file sales.csv --engine sqlite
+```
+
+Notes:
+
+- **Static lints** print to stderr (non-fatal) and flag common footguns — a broad
+  `SELECT *` projection, or an unfiltered full-file scan (no `WHERE`/`LIMIT`). Silence
+  them with `--no-lint`.
+- **`--analyze`** uses `EXPLAIN ANALYZE`, which *executes* the query and includes real
+  timings. Omit it for a cheap plan-only preview that never touches the data twice.
+- Params, `--preset`, `--db`/`--file`, and `--engine` behave just like `run`. Under
+  `--no-input` (or `QUACKPACK_NO_INPUT=1`) a missing required param fails fast instead of
+  prompting.
+- The **SQLite fallback** has no `EXPLAIN ANALYZE`; it prints `EXPLAIN QUERY PLAN` and notes
+  the degraded form on stderr.
+
 ### Param presets (saved bindings)
 
 One parameterized query becomes many one-keystroke reports. Save a named set of `:param`
