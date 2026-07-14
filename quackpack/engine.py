@@ -157,6 +157,7 @@ def run_query(
     file: Optional[str | Path] = None,
     params: Optional[Mapping[str, Any]] = None,
     engine: str = "auto",
+    view_as: Optional[str] = None,
 ) -> QueryResult:
     """Execute *sql* and return a :class:`QueryResult`.
 
@@ -184,8 +185,8 @@ def run_query(
     params = dict(params or {})
 
     if chosen == "duckdb":
-        return _run_duckdb(sql, db_path, file_path, params)
-    return _run_sqlite(sql, db_path, file_path, params)
+        return _run_duckdb(sql, db_path, file_path, params, view_as)
+    return _run_sqlite(sql, db_path, file_path, params, view_as)
 
 
 def _resolve_engine(engine: str) -> str:
@@ -245,6 +246,7 @@ def _run_duckdb(
     db_path: Optional[Path],
     file_path: Optional[Path],
     params: Mapping[str, Any],
+    view_as: Optional[str] = None,
 ) -> QueryResult:
     assert _duckdb is not None  # narrowed by caller via DUCKDB_AVAILABLE
 
@@ -260,7 +262,7 @@ def _run_duckdb(
 
     try:
         if file_path is not None:
-            _attach_file_duckdb(con, file_path)
+            _attach_file_duckdb(con, file_path, view_as)
         return _execute_duckdb(con, sql, params)
     finally:
         con.close()
@@ -277,11 +279,16 @@ def _sql_str_literal(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"
 
 
-def _attach_file_duckdb(con: Any, file_path: Path) -> None:
-    """Expose *file_path* as a queryable relation in the DuckDB connection."""
+def _attach_file_duckdb(con: Any, file_path: Path, view_as: Optional[str] = None) -> None:
+    """Expose *file_path* as a queryable relation in the DuckDB connection.
+
+    The relation is named after the file's stem by default; pass *view_as* to
+    force a stable alias (used by glob fan-out so a query like ``select * from
+    data`` runs unchanged across files with differing stems).
+    """
     _require_exists(file_path, "File")
     kind = _classify_file(file_path)
-    name = _view_name(file_path)
+    name = view_as or _view_name(file_path)
     literal = _sql_str_literal(str(file_path))
 
     try:
@@ -391,6 +398,7 @@ def _run_sqlite(
     db_path: Optional[Path],
     file_path: Optional[Path],
     params: Mapping[str, Any],
+    view_as: Optional[str] = None,
 ) -> QueryResult:
     # Decide what to connect to. Priority: an explicit --db, else a SQLite
     # --file, else an in-memory db (into which a CSV --file can be loaded).
@@ -432,7 +440,7 @@ def _run_sqlite(
         ):
             con.execute("ATTACH DATABASE ? AS extra", [str(file_path)])
         if csv_to_load is not None:
-            _load_csv_into_sqlite(con, csv_to_load, _view_name(csv_to_load))
+            _load_csv_into_sqlite(con, csv_to_load, view_as or _view_name(csv_to_load))
         return _execute_sqlite(con, sql, params)
     finally:
         con.close()
