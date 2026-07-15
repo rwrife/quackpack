@@ -180,6 +180,37 @@ Notes:
   SQLite fallback ingests CSVs (inferring numeric columns) and reads `.sqlite` files;
   Parquet requires DuckDB.
 
+#### Multi-file / glob fan-out
+
+Pass a **glob** to `--file` and quackpack runs the stored query across every matching
+file, then `UNION ALL`s the results into one table by default:
+
+```console
+# One saved query, many partitioned files → a single unioned result:
+$ quackpack run daily-errors --file 'logs/*.parquet'
+
+# Keep results separate, one labelled table per file:
+$ quackpack run daily-errors --file 'logs/*.parquet' --per-file
+
+# Add a _source_file provenance column (which file each row came from):
+$ quackpack run daily-errors --file 'logs/*.parquet' --with-source
+```
+
+Notes:
+
+- **Quote the glob** (`'logs/*.parquet'`) so your *shell* doesn't expand it before
+  quackpack sees it — quackpack does the expansion (and `**` recursive globs work).
+- **Reference the file as `data`** in a glob query (e.g. `select * from data`). Because
+  each matched file has a different stem, quackpack exposes every file under the stable
+  relation name `data` so one query runs unchanged across all of them.
+- **`--per-file`** prints a separate labelled table per file instead of UNION-ing; use it
+  when schemas or scales differ. **`--with-source`** prepends a `_source_file` column for
+  provenance (works with both UNION and `--per-file`).
+- Works for **CSV / Parquet / JSON**; a glob matching **zero files** is a clean error.
+  `--format csv/json` output paths behave exactly as for a single file.
+- The default UNION requires matching columns across files; mismatches fail loudly (switch
+  to `--per-file`). `--per-file`/`--with-source` are only valid when `--file` is a glob.
+
 ### Inspect the plan (`explain`)
 
 Before you commit a query to your library — or when a `run` feels slow — `quackpack explain

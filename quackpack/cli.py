@@ -40,6 +40,7 @@ from rich.table import Table
 
 from . import __version__
 from .engine import EngineError, available_engines, explain_query, run_query
+from .glob import is_glob, run_query_multi
 from .history import ERROR, OK, describe_last_run, humanize_age
 from .iox import (
     IMPORT_STRATEGIES,
@@ -695,6 +696,22 @@ def run(
             "`--no-input`)."
         ),
     ),
+    per_file: bool = typer.Option(
+        False,
+        "--per-file",
+        help=(
+            "When `--file` is a glob, render a separate labelled table per "
+            "matched file instead of UNION-ing all results into one."
+        ),
+    ),
+    with_source: bool = typer.Option(
+        False,
+        "--with-source",
+        help=(
+            "When `--file` is a glob, prepend a `_source_file` column (the "
+            "originating file path) to every row for provenance."
+        ),
+    ),
 ) -> None:
     """Run a stored query against a data target and render the results.
 
@@ -750,6 +767,61 @@ def run(
     params = _resolve_params(
         expected_params, param, base=preset_values, no_input=effective_no_input
     )
+
+    # A glob `--file` fans the query out across every matching file (issue #32):
+    # UNION the results by default, or render one labelled table per file with
+    # `--per-file`. Non-glob `--file` keeps the single-target fast path below.
+    glob_mode = is_glob(file)
+    if not glob_mode and (per_file or with_source):
+        raise _fail(
+            "--per-file/--with-source only apply when --file is a glob "
+            "(e.g. --file 'logs/*.parquet')."
+        )
+
+    if glob_mode:
+        try:
+            multi = run_query_multi(
+                sql,
+                pattern=str(file),
+                db=db,
+                params=params,
+                engine=engine,
+                per_file=per_file,
+                with_source=with_source,
+            )
+        except EngineError as exc:
+            try:
+                catalog.record_run(query.name, ERROR)
+            except CatalogError:  # pragma: no cover - best-effort bookkeeping
+                pass
+            raise _fail(str(exc))
+
+        try:
+            catalog.record_run(query.name, OK)
+        except CatalogError:  # pragma: no cover - best-effort bookkeeping
+            pass
+
+        use_envelope = fmt.lower() == "json" and (envelope or effective_no_input)
+        if per_file:
+            for path, result in multi.per_file:
+                console.print(f"[bold]{path}[/bold]")
+                if use_envelope:
+                    console.print(
+                        render_json_envelope(result), markup=False, highlight=False
+                    )
+                else:
+                    render(result, fmt, console)
+        else:
+            assert multi.combined is not None
+            if use_envelope:
+                console.print(
+                    render_json_envelope(multi.combined),
+                    markup=False,
+                    highlight=False,
+                )
+            else:
+                render(multi.combined, fmt, console)
+        return
 
     try:
         result = run_query(

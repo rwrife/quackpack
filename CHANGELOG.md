@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Glob / multi-file fan-out on `run`** (backlog #7 / issue #32): pass a glob to
+  `--file` (e.g. `quackpack run daily-errors --file 'logs/*.parquet'`) and quackpack expands
+  it and runs the stored query across every matching file. Results are `UNION ALL`ed into one
+  table by default; `--per-file` renders a separate labelled table per file, and
+  `--with-source` prepends a `_source_file` provenance column (both modes). In glob mode each
+  file is exposed under the stable relation name `data` so a single `select * from data`
+  query runs unchanged across files with differing stems. Works for CSV/Parquet/JSON; a
+  zero-match glob is a clean error, mismatched UNION schemas fail loudly (use `--per-file`),
+  and `--format csv/json` output paths are unchanged. README documents glob usage and
+  shell-quoting caveats.
 - **`explain` — query plan + static lints** (backlog #12 / issue #31): `quackpack explain
   <name> [--file/--db ...] [--param ...]` renders DuckDB's `EXPLAIN` plan for a saved query
   without keeping its results — a fast, read-only feasibility/perf check before you commit a
