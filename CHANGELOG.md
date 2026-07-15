@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`schedule` — emit (and optionally install) a cron line** (backlog #11 / issue #33):
+  `quackpack schedule <name> --at "0 8 * * *" --file data.parquet --out out.csv` prints a
+  ready-to-paste crontab line that reruns a saved query via `quackpack run` (always with
+  `--no-input`/`--no-snapshot`) and redirects the result to a file — no daemon, no server.
+  `--format`, `--param`, `--preset`, and `--file`/`--db` thread through exactly like `run`,
+  shell-quoted for safe round-tripping. `--install` appends the line to your crontab
+  **idempotently** behind a `--yes`/confirm guard, tagging each managed line with a
+  `# quackpack:schedule <name>` sentinel; `--list` and `--remove` operate on **only**
+  quackpack's own lines, never clobbering existing crontab entries. Cron-expression
+  validation, pure command/line building, and mocked crontab mutation are unit-tested;
+  README documents the emit-a-line philosophy and install caveats.
 - **Glob / multi-file fan-out on `run`** (backlog #7 / issue #32): pass a glob to
   `--file` (e.g. `quackpack run daily-errors --file 'logs/*.parquet'`) and quackpack expands
   it and runs the stored query across every matching file. Results are `UNION ALL`ed into one
