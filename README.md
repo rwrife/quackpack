@@ -436,6 +436,47 @@ Notes:
 - **No cache?** If the query was never run (or the last run used `--no-snapshot`), `last`
   exits `1` with `error: no cached result for '<name>' — run it first`.
 
+### Schedule a rerun (`schedule`)
+
+`quackpack schedule <name>` builds a ready-to-paste **crontab line** that reruns a saved
+query on a schedule and dumps the result to a file. quackpack stays a small sharp tool:
+there's **no daemon and no server** — by default it just *prints the line* and you decide
+where it lives.
+
+```bash
+# Emit a daily-at-08:00 line that writes CSV to out.csv:
+$ quackpack schedule sales --at "0 8 * * *" --file sales.csv --out out.csv
+0 8 * * * quackpack run sales --file sales.csv --format csv --no-input --no-snapshot > out.csv # quackpack:schedule sales
+
+# --format / --param / --preset thread through exactly like `run`:
+$ quackpack schedule sales --at "*/15 9-17 * * 1-5" -F json -P q3-2026 -o extract.json
+```
+
+The emitted `run` command always carries `--no-input` (cron has no TTY, so a missing param
+is an error rather than a hang) and `--no-snapshot` (a scheduled extract shouldn't churn
+the `diff` cache). Paths are shell-quoted so spaces survive the round-trip.
+
+**Installing (optional).** `--install` appends the line to *your* crontab, guarded by a
+confirmation (`--yes` to skip the prompt). It's **idempotent** — an identical line is a
+no-op — and every managed line is tagged with a `# quackpack:schedule <name>` sentinel so
+quackpack only ever touches its own entries:
+
+```bash
+$ quackpack schedule sales --at "0 8 * * *" -o out.csv --install --yes
+Installed crontab line.
+
+$ quackpack schedule sales --list        # only quackpack-managed lines
+0 sales  0 8 * * * quackpack run sales ... # quackpack:schedule sales
+
+$ quackpack schedule sales --remove --yes # drops managed line(s) for `sales`
+Removed 1 line(s) for 'sales'.
+```
+
+**Install caveats:** quackpack never rewrites or reorders your existing (hand-written)
+crontab lines — it only appends or removes its own sentinel-tagged entries. `--remove`
+selects **only** managed lines (by query name, or `--list` index), so your other cron jobs
+are always safe.
+
 ### Export / import & sharing packs
 
 Your `pack.yaml` is already one portable file, but `export` / `import` let you share a

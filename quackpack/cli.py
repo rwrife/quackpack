@@ -59,6 +59,14 @@ from .manifest import (
     tool_entry,
 )
 from .render import FORMATS, render, render_json_envelope
+from .schedule import (
+    CronError,
+    build_cron_line,
+    build_run_command,
+    install_line,
+    list_lines,
+    remove_line,
+)
 from .snapshots import (
     DiffResult,
     Snapshot,
@@ -1851,6 +1859,144 @@ def import_cmd(
             f"[dim]skipped (name exists): {', '.join(sorted(plan.skipped))}[/dim]"
         )
     console.print(f"[green]{plan.summary()}[/green]")
+
+
+@app.command()
+def schedule(
+    name: str = typer.Argument(..., help="Name of the saved query to schedule."),
+    at: str = typer.Option(
+        "0 8 * * *",
+        "--at",
+        help='Cron expression (5 fields), e.g. "0 8 * * *" for daily at 08:00.',
+    ),
+    file: Optional[str] = typer.Option(
+        None,
+        "--file",
+        "-f",
+        help="Data file to expose to the query (threaded into the emitted command).",
+    ),
+    db: Optional[str] = typer.Option(
+        None, "--db", help="Database file to query (threaded into the emitted command)."
+    ),
+    fmt: str = typer.Option(
+        "csv",
+        "--format",
+        "-F",
+        help="Output format for the scheduled run: csv, json, or table.",
+    ),
+    param: Optional[List[str]] = typer.Option(
+        None, "--param", "-p", help="Bind a :param as key=value (repeatable)."
+    ),
+    preset: Optional[str] = typer.Option(
+        None, "--preset", "-P", help="Apply a saved preset's param values."
+    ),
+    out: Optional[str] = typer.Option(
+        None, "--out", "-o", help="Redirect the result to this file (`> out`)."
+    ),
+    quackpack_bin: str = typer.Option(
+        "quackpack",
+        "--bin",
+        help="Path/name of the quackpack binary to invoke in the cron line.",
+    ),
+    install: bool = typer.Option(
+        False, "--install", help="Append the line to your crontab (guarded by --yes)."
+    ),
+    list_: bool = typer.Option(
+        False, "--list", help="List quackpack-managed crontab lines and exit."
+    ),
+    remove: bool = typer.Option(
+        False, "--remove", help="Remove quackpack-managed crontab line(s) for NAME."
+    ),
+    yes: bool = typer.Option(
+        False, "--yes", "-y", help="Skip the confirmation prompt for --install/--remove."
+    ),
+) -> None:
+    """Emit a crontab line that reruns a saved query on a schedule.
+
+    By default this just *prints* a ready-to-paste cron line invoking
+    `quackpack run <name> ...` with `--no-input`/`--no-snapshot` (cron has no
+    TTY and a scheduled extract shouldn't churn the diff cache) and, with
+    `--out`, a `> file` redirect. No daemon, no server — you own where the line
+    lives. `--format`, `--param`, `--preset` and `--file`/`--db` are threaded
+    through exactly as you'd type them, shell-quoted for safe round-tripping.
+
+    `--install` appends the line to your crontab *idempotently* (an identical
+    line is a no-op) behind a `--yes` confirm guard, marking it with a sentinel
+    comment so `--list` and `--remove` only ever touch quackpack's own lines —
+    your existing crontab is never clobbered.
+    """
+    # --list / --remove operate purely on the crontab and ignore command-build
+    # options, so handle them up front.
+    if list_:
+        try:
+            lines = list_lines()
+        except CronError as exc:
+            raise _fail(str(exc))
+        if not lines:
+            console.print("[dim]No quackpack-managed crontab lines.[/dim]")
+            return
+        for m in lines:
+            label = m.name or "(unnamed)"
+            console.print(f"[cyan]{m.index}[/cyan] [bold]{label}[/bold]  {m.raw}")
+        return
+
+    if remove:
+        if not (yes or (sys.stdin.isatty() and typer.confirm(
+            f"Remove quackpack-managed crontab line(s) for {name!r}?"
+        ))):
+            raise _fail("Aborted (pass --yes to remove without prompting).")
+        try:
+            removed = remove_line(name=name)
+        except CronError as exc:
+            raise _fail(str(exc))
+        for m in removed:
+            console.print(f"[yellow]removed[/yellow] {m.raw}")
+        console.print(f"[green]Removed {len(removed)} line(s) for {name!r}.[/green]")
+        return
+
+    if fmt.lower() not in FORMATS:
+        raise _fail(f"Unknown --format {fmt!r}. Choose one of: {', '.join(FORMATS)}.")
+
+    # Sanity-check that the query actually exists before emitting a line that
+    # would fail at cron time.
+    catalog = _load()
+    try:
+        catalog.get(name)
+    except QueryNotFoundError as exc:
+        raise _fail(str(exc))
+
+    try:
+        command = build_run_command(
+            name,
+            file=file,
+            db=db,
+            fmt=fmt,
+            params=param,
+            preset=preset,
+            out=out,
+            quackpack_bin=quackpack_bin,
+        )
+        line = build_cron_line(at, command, name=name)
+    except CronError as exc:
+        raise _fail(str(exc))
+
+    if not install:
+        # Plain stdout so the line is clean to pipe / paste.
+        typer.echo(line)
+        return
+
+    if not (yes or (sys.stdin.isatty() and typer.confirm(
+        f"Append this line to your crontab?\n  {line}"
+    ))):
+        raise _fail("Aborted (pass --yes to install without prompting).")
+    try:
+        changed = install_line(line)
+    except CronError as exc:
+        raise _fail(str(exc))
+    if changed:
+        console.print("[green]Installed crontab line.[/green]")
+    else:
+        console.print("[dim]Identical line already present — nothing to do.[/dim]")
 
 
 if __name__ == "__main__":  # pragma: no cover
