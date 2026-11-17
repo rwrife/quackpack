@@ -30,6 +30,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+tui = [
+    "textual>=0.89,<8",
+]
 dev = [
     "pytest>=8.0",
 ]

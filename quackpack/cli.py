@@ -35,6 +35,7 @@ from typing import Any, List, Optional
 import typer
 import yaml
 from rich.console import Console
+from rich.markup import escape
 from rich.syntax import Syntax
 from rich.table import Table
 
@@ -128,6 +129,37 @@ def main(
     ),
 ) -> None:
     """quackpack — save the query, rerun the query."""
+
+
+@app.command()
+def tui(
+    db: Optional[Path] = typer.Option(None, "--db", help="Initial database target."),
+    file: Optional[Path] = typer.Option(None, "--file", "-f", help="Initial data file target."),
+    target: str = typer.Option("", "--target", help="Initial URI, local path, or @connection."),
+    engine: str = typer.Option("auto", "--engine", "-e", help="auto, duckdb, or sqlite."),
+    tag: str = typer.Option("", "--tag", help="Initially filter to one exact tag."),
+) -> None:
+    """Browse, preview, and run saved queries in the optional terminal UI."""
+    try:
+        from .tui_app import QuackpackApp
+    except ModuleNotFoundError as exc:
+        if exc.name != "textual" and not (exc.name or "").startswith("textual."):
+            raise
+        raise _fail(escape("The TUI extra is not installed. Run: pip install 'quackpack[tui]'"))
+    from .tui import resolve_run
+
+    try:
+        resolve_run(
+            "", db=str(db) if db else "", file=str(file) if file else "",
+            engine=engine, target=target,
+        )
+        catalog = Catalog.load()
+    except (ValueError, TargetError, CatalogError, OSError, yaml.YAMLError) as exc:
+        raise _fail(str(exc))
+    QuackpackApp(
+        catalog, db=str(db) if db else "", file=str(file) if file else "",
+        engine=engine.strip().lower(), tag=tag, target=target,
+    ).run()
 
 
 @app.command()

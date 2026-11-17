@@ -122,6 +122,38 @@ $ quackpack edit top-errors       # opens $VISUAL / $EDITOR (vi by default)
 updated top-errors  params: src, n, since
 ```
 
+### TUI
+
+Install the optional terminal browser and launch your saved pack:
+
+```console
+$ pip install 'quackpack[tui]'
+$ quackpack tui --file examples/sales.csv --tag demo
+```
+
+The left pane searches names, SQL, descriptions, and tags live using the same
+case-insensitive substring search as `quackpack search`. The separate tag field
+matches one exact tag; clear it to show all tags. Each query shows its last-run
+age. The right pane previews highlighted, expanded SQL, description, detected
+`:params`, and the last cached result.
+
+Choose local **DB** / **File** paths and an engine in the bottom fields (or seed
+them with `--db`, `--file`, `--engine`). Blank targets use an in-memory database.
+Alternatively, use `--target @analytics` or the masked Target field for an existing
+named connection, Postgres/MySQL URI, or local path; leave DB/File blank when
+using Target. Remote execution reuses the read-only DuckDB scanners described below.
+Press **Enter** on the query list, **Ctrl+R**, or **Run** to execute; missing
+parameters are prompted inside the app and auto-typed like the CLI. Escape
+cancels the parameter dialog. Queries run as written, including writes.
+Successful runs save history and a snapshot, just like `run`; use Tab to focus
+the scrollable results table. **/** focuses search, **Ctrl+S** focuses SQL,
+**?** opens help, and **Q** quits (leave text fields first).
+
+Textual is not required for other commands, including `quackpack --help`.
+
+> Recording placeholder: an asciinema cast / GIF of browse, filter, preview,
+> parameter entry, and run will be added here.
+
 ### Run a query
 
 `quackpack run <name>` executes a saved query against a data target and renders the
