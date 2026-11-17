@@ -39,6 +39,7 @@ from rich.syntax import Syntax
 from rich.table import Table
 
 from . import __version__
+from .connections import Connections
 from .engine import EngineError, available_engines, explain_query, run_query
 from .glob import is_glob, run_query_multi
 from .history import ERROR, OK, describe_last_run, humanize_age
@@ -91,6 +92,7 @@ from .templating import (
     expand_query,
     extract_refs,
 )
+from .targets import TargetError, parse_target, resolve_options
 
 app = typer.Typer(
     name="quackpack",
@@ -642,6 +644,9 @@ def edit(
 @app.command()
 def run(
     name: str = typer.Argument(..., help="Name of the saved query to execute."),
+    target: Optional[str] = typer.Option(
+        None, "--target", help="Postgres/MySQL URI, @connection, or local file/database."
+    ),
     db: Optional[Path] = typer.Option(
         None, "--db", help="Database file to query (DuckDB or SQLite)."
     ),
@@ -741,6 +746,11 @@ def run(
     if fmt.lower() not in FORMATS:
         raise _fail(f"Unknown --format {fmt!r}. Choose one of: {', '.join(FORMATS)}.")
 
+    try:
+        db, file, remote = resolve_options(target, db, file)
+    except TargetError as exc:
+        raise _fail(str(exc))
+
     catalog = _load()
     try:
         query = catalog.get(name)
@@ -838,6 +848,7 @@ def run(
             file=file,
             params=params,
             engine=engine,
+            target=remote.value if remote is not None else None,
         )
     except EngineError as exc:
         # Record the failed attempt so history reflects reality, then surface
@@ -890,6 +901,9 @@ def run(
 @app.command()
 def explain(
     name: str = typer.Argument(..., help="Name of the saved query to explain."),
+    target: Optional[str] = typer.Option(
+        None, "--target", help="Postgres/MySQL URI, @connection, or local file/database."
+    ),
     db: Optional[Path] = typer.Option(
         None, "--db", help="Database file to query (DuckDB or SQLite)."
     ),
@@ -985,6 +999,7 @@ def explain(
             params=params,
             engine=engine,
             analyze=analyze,
+            target=target,
         )
     except EngineError as exc:
         raise _fail(str(exc))
@@ -1468,6 +1483,50 @@ def rm(
 
     catalog.remove(target.name)
     console.print(f"[green]removed[/green] [bold cyan]{target.name}[/bold cyan]")
+
+
+# --------------------------------------------------------------------------
+# Command group: conn add / ls / rm
+# --------------------------------------------------------------------------
+
+conn_app = typer.Typer(help="Manage local named remote connections.", no_args_is_help=True)
+app.add_typer(conn_app, name="conn")
+
+
+@conn_app.command("add")
+def conn_add(
+    name: str = typer.Argument(..., help="Local connection name."),
+    dsn: str = typer.Argument(..., help="Postgres/MySQL connection URI (stored locally)."),
+) -> None:
+    """Save a connection outside the shared query pack."""
+    try:
+        Connections().add(name, dsn)
+    except TargetError as exc:
+        raise _fail(str(exc))
+    typer.echo(f"saved connection {name}")
+
+
+@conn_app.command("ls")
+def conn_ls() -> None:
+    """List local connections with credentials redacted."""
+    try:
+        connections = Connections().load()
+    except TargetError as exc:
+        raise _fail(str(exc))
+    for name, dsn in sorted(connections.items()):
+        typer.echo(f"{name}\t{parse_target(dsn).redacted()}")
+    if not connections:
+        typer.echo("No saved connections.")
+
+
+@conn_app.command("rm")
+def conn_rm(name: str = typer.Argument(..., help="Local connection name to remove.")) -> None:
+    """Remove a local connection."""
+    try:
+        Connections().remove(name)
+    except TargetError as exc:
+        raise _fail(str(exc))
+    typer.echo(f"removed connection {name}")
 
 
 # --------------------------------------------------------------------------

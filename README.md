@@ -180,6 +180,47 @@ Notes:
   SQLite fallback ingests CSVs (inferring numeric columns) and reads `.sqlite` files;
   Parquet requires DuckDB.
 
+### Remote targets
+
+`run` and `explain` accept `--target` with a Postgres or MySQL URI, a named
+connection, or a local file/database path (CSV/Parquet versus `.duckdb`/`.sqlite`
+is inferred from the suffix). It cannot be combined with `--file` or `--db`;
+those existing options still work unchanged.
+
+```console
+$ quackpack add -n recent-orders -q "SELECT * FROM remote.public.orders LIMIT 10"
+$ quackpack run recent-orders --target 'postgres://analyst@localhost/shop'
+$ quackpack explain recent-orders --target 'postgres://analyst@localhost/shop'
+
+# Save a local connection, then reuse it without putting a DSN in your pack:
+$ quackpack conn add prod 'postgres://analyst@localhost/shop?sslmode=require'
+$ quackpack conn ls
+$ quackpack run recent-orders --target @prod
+$ quackpack conn rm prod
+```
+
+DuckDB installs and loads its `postgres` or `mysql` scanner on demand (the first
+use needs extension download access), then attaches the database as `remote`
+with **READ_ONLY**. Reference Postgres tables as `remote.schema.table`; MySQL
+tables are accessible as `remote.table` (or `remote.database.table`). Remote
+targets require DuckDB; they never fall back to SQLite.
+
+MySQL URIs such as `mysql://analyst@localhost:3306/shop` are translated to the
+scanner's key/value DSN format. Optional URI query settings support `socket` and
+the scanner's `ssl_*` options, such as `?ssl_mode=required`. Percent-encode
+special characters in URI credentials.
+
+Named connections are stored as **plaintext** in
+`$QUACKPACK_HOME/connections.json` (default `~/.quackpack/connections.json`),
+separately from `pack.yaml` and query exports. New files are owner-only on POSIX;
+Windows inherits the catalog directory's ACLs. Protect this directory and never
+share or commit the connection file. `conn ls` hides user credentials and all
+URI query values; driver error details are suppressed for remote operations
+because scanners may echo secrets. Prefer password-free URIs with native driver
+credential configuration; passwords typed on a command line may remain in shell
+history or process listings. Query results and plans may still contain sensitive
+database content; use `--no-snapshot` on `run` to avoid its usual local result cache.
+
 #### Multi-file / glob fan-out
 
 Pass a **glob** to `--file` and quackpack runs the stored query across every matching
