@@ -122,6 +122,39 @@ $ quackpack edit top-errors       # opens $VISUAL / $EDITOR (vi by default)
 updated top-errors  params: src, n, since
 ```
 
+### Keeping the pack tidy
+
+Inspect the saved pack's usage before retiring old experiments:
+
+```console
+$ quackpack stats
+$ quackpack stats --top 10 --tag finance
+$ quackpack stats --format json
+$ quackpack prune                    # preview only; default threshold is 180 days
+$ quackpack prune --older-than 90     # never-run OR last run more than 90 days ago
+$ quackpack prune --older-than 90 --yes
+```
+
+`stats` shows total queries and runs, the most-run queries, never-run count,
+oldest-untouched queries, tag distribution, and queries with a recorded non-`ok`
+last status. `--top` (default 5) limits both rankings; ties sort by name.
+Oldest-untouched uses the last-run timestamp, or creation for never-run queries.
+`--tag` scopes every statistic to one exact tag (including counts of its
+co-occurring tags). JSON contains `total_queries`, `total_runs`,
+`never_run_count`, `most_run`, `oldest_untouched`, `tag_distribution`, and
+`last_errors`; query entries contain name, run count, last run/status, and creation.
+An empty pack produces zero totals and empty collections.
+
+`prune` is **dry-run by default** and only deletes with `--yes`, using the same
+catalog removal path as `rm`. Never-run means neither recorded runs nor a last-run date;
+these queries qualify regardless of creation age. Previously run queries qualify
+only when their last run is strictly older than the threshold. Missing or invalid
+run dates are skipped with a warning, not treated as stale. Queries with any
+preset or an incoming `{{ query-name }}` reference from another query are always
+protected, even if the referencing query is also a candidate. References inside
+quoted SQL literals do not count. Unknown dates are omitted from the oldest ranking.
+Review the preview before rerunning with `--yes`; removals are permanent.
+
 ### TUI
 
 Install the optional terminal browser and launch your saved pack:

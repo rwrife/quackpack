@@ -25,10 +25,13 @@ column) since last time; ``snapshot show/rm`` inspect or clear the cache.
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
 import tempfile
+from dataclasses import asdict
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, List, Optional
 
@@ -88,6 +91,7 @@ from .store import (
     QueryNotFoundError,
     catalog_path,
 )
+from .stats import QueryUsage, plan_prune, summarize
 from .templating import (
     TemplateError,
     expand_query,
@@ -1513,8 +1517,87 @@ def rm(
             console.print("Aborted.")
             raise typer.Exit()
 
-    catalog.remove(target.name)
-    console.print(f"[green]removed[/green] [bold cyan]{target.name}[/bold cyan]")
+    _remove_query(catalog, target.name)
+
+
+def _remove_query(catalog: Catalog, name: str) -> None:
+    """Shared persisted deletion path for rm and prune."""
+    catalog.remove(name)
+    console.print(f"[green]removed[/green] [bold cyan]{escape(name)}[/bold cyan]")
+
+
+def _usage_table(title: str, rows: list[QueryUsage]) -> None:
+    table = Table(title=title, header_style="bold")
+    for column in ("name", "runs", "last run", "last status"):
+        table.add_column(column)
+    for row in rows:
+        table.add_row(
+            escape(row.name),
+            str(row.run_count),
+            escape(row.last_run or f"never (created {row.created})"),
+            escape(row.last_status or "-"),
+        )
+    console.print(table)
+
+
+@app.command()
+def stats(
+    top: int = typer.Option(5, "--top", min=1, help="Size of usage rankings."),
+    tag: Optional[str] = typer.Option(None, "--tag", "-t", help="Scope to this exact tag."),
+    fmt: str = typer.Option("table", "--format", help="Output format: table or json."),
+) -> None:
+    """Show usage totals, rankings, tags, and queries whose last run failed."""
+    if fmt not in ("table", "json"):
+        raise _fail("Stats format must be table or json.")
+    summary = summarize(_load(), top=top, tag=tag)
+    if fmt == "json":
+        typer.echo(json.dumps(asdict(summary), ensure_ascii=False))
+        return
+    table = Table(title="Pack usage", header_style="bold")
+    table.add_column("metric")
+    table.add_column("count", justify="right")
+    table.add_row("Total queries", str(summary.total_queries))
+    table.add_row("Total runs", str(summary.total_runs))
+    table.add_row("Never run", str(summary.never_run_count))
+    console.print(table)
+    _usage_table("Most-run", summary.most_run)
+    _usage_table("Oldest-untouched (last run, or creation if never run)", summary.oldest_untouched)
+    tags = Table(title="Tag distribution", header_style="bold")
+    tags.add_column("tag")
+    tags.add_column("queries", justify="right")
+    for name, count in summary.tag_distribution.items():
+        tags.add_row(escape(name), str(count))
+    console.print(tags)
+    _usage_table("Last-error queries", summary.last_errors)
+
+
+@app.command()
+def prune(
+    older_than: int = typer.Option(
+        180, "--older-than", min=0, help="Select runs older than this many days."
+    ),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Delete candidates (default: dry-run)."),
+) -> None:
+    """Retire never-run or stale queries, protecting presets and incoming refs."""
+    catalog = _load()
+    plan = plan_prune(catalog, older_than=older_than, now=datetime.now(timezone.utc))
+    _usage_table(
+        "Prune candidates", [QueryUsage.from_query(q) for q in plan.candidates]
+    )
+    for name, reason in plan.protected.items():
+        console.print(f"Protected {escape(name)}: {reason}.")
+    for name in plan.unknown_history:
+        err_console.print(
+            f"[yellow]warning:[/yellow] Skipping {escape(name)}: missing or invalid last-run date."
+        )
+    if not yes:
+        console.print(
+            f"Dry-run: {len(plan.candidates)} candidates. Nothing removed; use --yes to delete."
+        )
+        return
+    for query in plan.candidates:
+        _remove_query(catalog, query.name)
+    console.print(f"Removed {len(plan.candidates)} queries.")
 
 
 # --------------------------------------------------------------------------
