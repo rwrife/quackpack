@@ -21,6 +21,8 @@ htmlcov/
 
 # quackpack local data / data files
 .quackpack/
+connections.json
+.connections-*
 *.duckdb
 *.duckdb.wal
 *.sqlite

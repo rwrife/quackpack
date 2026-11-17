@@ -28,11 +28,13 @@ from __future__ import annotations
 
 import re
 import sqlite3
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable, Mapping, Optional
+from typing import Any, Iterable, Iterator, Mapping, Optional
 
 from .params import to_duckdb_placeholders
+from .targets import Target, TargetError, resolve_options
 
 __all__ = [
     "EngineError",
@@ -158,6 +160,7 @@ def run_query(
     params: Optional[Mapping[str, Any]] = None,
     engine: str = "auto",
     view_as: Optional[str] = None,
+    target: Optional[str] = None,
 ) -> QueryResult:
     """Execute *sql* and return a :class:`QueryResult`.
 
@@ -169,6 +172,9 @@ def run_query(
         Path to a database file to attach (DuckDB ``.duckdb`` or a SQLite file).
     file:
         Path to a data file (CSV / Parquet / SQLite) to expose to the query.
+    target:
+        Remote postgres/mysql URI, @connection name, or local data/database path.
+        Mutually exclusive with db and file. Remote attachments are read-only.
     params:
         Mapping of placeholder name -> value, bound natively (no interpolation).
     engine:
@@ -179,11 +185,15 @@ def run_query(
     if not sql:
         raise EngineError("Refusing to run an empty query.")
 
-    chosen = _resolve_engine(engine)
+    db, file, remote = _target_options(target, db, file)
+    chosen = _resolve_target_engine(engine, remote)
     db_path = _as_path(db)
     file_path = _as_path(file)
     params = dict(params or {})
 
+    if remote is not None:
+        with _remote_connection(remote) as con:
+            return _execute_duckdb(con, sql, params)
     if chosen == "duckdb":
         return _run_duckdb(sql, db_path, file_path, params, view_as)
     return _run_sqlite(sql, db_path, file_path, params, view_as)
@@ -214,6 +224,7 @@ def explain_query(
     params: Optional[Mapping[str, Any]] = None,
     engine: str = "auto",
     analyze: bool = False,
+    target: Optional[str] = None,
 ) -> ExplainResult:
     """Return the query plan for *sql* without returning its result rows.
 
@@ -226,11 +237,15 @@ def explain_query(
     if not sql:
         raise EngineError("Refusing to explain an empty query.")
 
-    chosen = _resolve_engine(engine)
+    db, file, remote = _target_options(target, db, file)
+    chosen = _resolve_target_engine(engine, remote)
     db_path = _as_path(db)
     file_path = _as_path(file)
     params = dict(params or {})
 
+    if remote is not None:
+        with _remote_connection(remote) as con:
+            return _execute_explain_duckdb(con, sql, params, analyze)
     if chosen == "duckdb":
         return _explain_duckdb(sql, db_path, file_path, params, analyze)
     return _explain_sqlite(sql, db_path, file_path, params)
@@ -239,6 +254,57 @@ def explain_query(
 # --------------------------------------------------------------------------
 # DuckDB backend
 # --------------------------------------------------------------------------
+
+
+def _target_options(
+    target: Optional[str], db: Optional[str | Path], file: Optional[str | Path]
+) -> tuple[Optional[str | Path], Optional[str | Path], Optional[Target]]:
+    try:
+        return resolve_options(target, db, file)
+    except TargetError as exc:
+        raise EngineError(str(exc)) from None
+
+
+def _resolve_target_engine(engine: str, remote: Optional[Target]) -> str:
+    if remote is not None:
+        if (engine or "auto").strip().lower() == "sqlite" or not DUCKDB_AVAILABLE:
+            raise EngineError(
+                "Remote targets require DuckDB and its postgres/mysql scanner. "
+                "Install the 'duckdb' package and use --engine duckdb (or auto)."
+            )
+    return _resolve_engine(engine)
+
+
+def _remote_attach_sql(target: Target) -> str:
+    return (
+        f"ATTACH {_sql_str_literal(target.scanner_dsn())} AS remote "
+        f"(TYPE {target.kind}, READ_ONLY)"
+    )
+
+
+@contextmanager
+def _remote_connection(target: Target) -> Iterator[Any]:
+    assert _duckdb is not None
+    operation = "open DuckDB"
+    try:
+        con = _duckdb.connect(database=":memory:")
+        try:
+            operation = f"install/load the {target.kind} scanner"
+            con.execute(f"INSTALL {target.kind}")
+            con.execute(f"LOAD {target.kind}")
+            operation = f"attach the {target.kind} target read-only"
+            con.execute(_remote_attach_sql(target))
+            operation = "execute the remote query"
+            yield con
+        finally:
+            con.close()
+    except Exception:
+        # Drivers can echo the DSN, decoded password, or generated ATTACH SQL.
+        # Do not expose their text (including exception chains) at this boundary.
+        raise EngineError(
+            f"Could not {operation}. Check DuckDB scanner availability, network, "
+            "connection settings and query SQL. Driver details omitted to protect credentials."
+        ) from None
 
 
 def _run_duckdb(
@@ -271,10 +337,9 @@ def _run_duckdb(
 def _sql_str_literal(value: str) -> str:
     """Quote *value* as a SQL string literal (doubling embedded quotes).
 
-    Used only for file *paths* in DDL/table-function positions where engines
-    don't accept bound parameters (e.g. ``CREATE VIEW ... read_csv_auto(...)``).
-    Paths come from the user's own ``--file`` arg, but we quote defensively so a
-    path containing a quote can't break out of the literal.
+    Used for file paths and remote DSNs in DDL/table-function positions where
+    engines don't accept bound parameters. Embedded quotes must not break out
+    of the literal.
     """
     return "'" + value.replace("'", "''") + "'"
 
@@ -351,23 +416,24 @@ def _explain_duckdb(
     try:
         if file_path is not None:
             _attach_file_duckdb(con, file_path)
-        keyword = "EXPLAIN ANALYZE" if analyze else "EXPLAIN"
-        explain_sql = f"{keyword} {sql}"
-        if params:
-            explain_sql = to_duckdb_placeholders(explain_sql)
-            try:
-                cur = con.execute(explain_sql, dict(params))
-            except Exception as exc:
-                raise EngineError(_format_sql_error(exc))
-        else:
-            try:
-                cur = con.execute(explain_sql)
-            except Exception as exc:
-                raise EngineError(_format_sql_error(exc))
-        rows = cur.fetchall()
+        return _execute_explain_duckdb(con, sql, params, analyze)
     finally:
         con.close()
 
+
+def _execute_explain_duckdb(
+    con: Any, sql: str, params: Mapping[str, Any], analyze: bool
+) -> ExplainResult:
+    keyword = "EXPLAIN ANALYZE" if analyze else "EXPLAIN"
+    explain_sql = f"{keyword} {sql}"
+    try:
+        if params:
+            cur = con.execute(to_duckdb_placeholders(explain_sql), dict(params))
+        else:
+            cur = con.execute(explain_sql)
+        rows = cur.fetchall()
+    except Exception as exc:
+        raise EngineError(_format_sql_error(exc))
     plan = _render_explain_rows(rows)
     return ExplainResult(plan=plan, engine="duckdb", analyzed=analyze)
 
