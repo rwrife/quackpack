@@ -7,9 +7,8 @@ gnarly one-liner you wrote three weeks ago.
 It's like `tldr`/`navi` cheatsheets, but for *your own* analytical SQL. Your throwaway
 queries become reusable tools without becoming things you have to maintain.
 
-> Status: 🏗️ v0.1 nearly done. **M5 (`search`, `edit`, run history) is live**, and
-> there's now a bundled [`examples/`](./examples) quickstart you can run in ~2 minutes.
-> See [PLAN.md](./PLAN.md) for the full roadmap.
+> Status: v0.1.0 is tagged. See [`CHANGELOG.md`](./CHANGELOG.md) for later changes
+> and [`examples/`](./examples) for a quickstart.
 
 ## Demo
 
@@ -720,33 +719,15 @@ error: No query named 'nope'.
 exit=1
 ```
 
-## Coming next (finishing M6)
+## Releases
 
-Discovery and recall are done (M5: `search`, `edit`, run history), the
-[`examples/`](./examples) quickstart has landed, and the release plumbing is in
-place — a [`CHANGELOG.md`](./CHANGELOG.md) plus a tag-driven
-[release workflow](./.github/workflows/release.yml) that builds and verifies the
-sdist/wheel and attaches them to the GitHub Release (PyPI publish is opt-in via a
-repo secret). Shipping `v0.1.0` is now a one-liner for a maintainer:
-
-```console
-git tag v0.1.0 && git push origin v0.1.0
-```
-
-The [demo](#demo) is now wired up too: the README shows a real, reproducible
-still ([`demo/quackpack.svg`](./demo/quackpack.svg)) plus a recorded asciinema
-cast ([`demo/quackpack.cast`](./demo/quackpack.cast)), both generated from a
-CI-guarded walkthrough ([`demo/demo.sh`](./demo/demo.sh)); a
-[VHS](https://github.com/charmbracelet/vhs) tape ([`demo/demo.tape`](./demo/demo.tape))
-renders an animated GIF on demand. So the only remaining maintainer steps are
-(optionally) committing that GIF and tagging the `v0.1.0` release above.
-Every command's `--help` is now Markdown-rendered (clean inline-code, no stray
-markup), and exit codes follow the usual convention so quackpack scripts
-predictably (see [Exit codes](#exit-codes)).
+See the [changelog](./CHANGELOG.md) for released and unreleased changes. The
+[release workflow](./.github/workflows/release.yml) builds and verifies distribution
+artifacts for version tags; PyPI publishing is opt-in.
 
 ## Install
 
-From source today (PyPI publish lands with `v0.1.0`):
+Install from source:
 
 ```console
 # With uv (recommended):
@@ -760,12 +741,6 @@ git clone https://github.com/rwrife/quackpack && cd quackpack
 pip install -e ".[dev]"
 ```
 
-Once v0.1 is published:
-
-```console
-pipx install quackpack    # or: uv tool install quackpack
-```
-
 ## Tech
 
 Python · DuckDB · Typer · Rich · YAML. Boring on purpose.
@@ -773,7 +748,3 @@ Python · DuckDB · Typer · Rich · YAML. Boring on purpose.
 ## License
 
 MIT (see `LICENSE`). Release history lives in [`CHANGELOG.md`](./CHANGELOG.md).
-
----
-
-Part of an automated tool-lab experiment. Topic: `auto-tool-lab`.

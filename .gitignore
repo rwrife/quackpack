@@ -12,6 +12,7 @@ venv/
 env/
 
 # Tooling / caches
+.worktrees/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/

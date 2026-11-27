@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Pack stats and safe pruning**: `stats` summarizes usage and tags, while
+  `prune` previews stale or unused queries and protects presets and references.
+- **Remote targets**: run and explain queries against read-only Postgres or MySQL
+  targets, with optional locally stored named connections.
+- **Optional Textual browser**: browse, filter, preview, and run saved queries with
+  `quackpack tui` after installing the `tui` extra.
 - **`schedule` — emit (and optionally install) a cron line** (backlog #11 / issue #33):
   `quackpack schedule <name> --at "0 8 * * *" --file data.parquet --out out.csv` prints a
   ready-to-paste crontab line that reruns a saved query via `quackpack run` (always with
