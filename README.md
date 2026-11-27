@@ -7,9 +7,8 @@ gnarly one-liner you wrote three weeks ago.
 It's like `tldr`/`navi` cheatsheets, but for *your own* analytical SQL. Your throwaway
 queries become reusable tools without becoming things you have to maintain.
 
-> Status: 🏗️ v0.1 nearly done. **M5 (`search`, `edit`, run history) is live**, and
-> there's now a bundled [`examples/`](./examples) quickstart you can run in ~2 minutes.
-> See [PLAN.md](./PLAN.md) for the full roadmap.
+> Status: v0.1.0 is tagged. See [`CHANGELOG.md`](./CHANGELOG.md) for later changes
+> and [`examples/`](./examples) for a quickstart.
 
 ## Demo
 
@@ -121,6 +120,39 @@ and **re-detects `:params` on save**, so adding or removing a placeholder just w
 $ quackpack edit top-errors       # opens $VISUAL / $EDITOR (vi by default)
 updated top-errors  params: src, n, since
 ```
+
+### Keeping the pack tidy
+
+Inspect the saved pack's usage before retiring old experiments:
+
+```console
+$ quackpack stats
+$ quackpack stats --top 10 --tag finance
+$ quackpack stats --format json
+$ quackpack prune                    # preview only; default threshold is 180 days
+$ quackpack prune --older-than 90     # never-run OR last run more than 90 days ago
+$ quackpack prune --older-than 90 --yes
+```
+
+`stats` shows total queries and runs, the most-run queries, never-run count,
+oldest-untouched queries, tag distribution, and queries with a recorded non-`ok`
+last status. `--top` (default 5) limits both rankings; ties sort by name.
+Oldest-untouched uses the last-run timestamp, or creation for never-run queries.
+`--tag` scopes every statistic to one exact tag (including counts of its
+co-occurring tags). JSON contains `total_queries`, `total_runs`,
+`never_run_count`, `most_run`, `oldest_untouched`, `tag_distribution`, and
+`last_errors`; query entries contain name, run count, last run/status, and creation.
+An empty pack produces zero totals and empty collections.
+
+`prune` is **dry-run by default** and only deletes with `--yes`, using the same
+catalog removal path as `rm`. Never-run means neither recorded runs nor a last-run date;
+these queries qualify regardless of creation age. Previously run queries qualify
+only when their last run is strictly older than the threshold. Missing or invalid
+run dates are skipped with a warning, not treated as stale. Queries with any
+preset or an incoming `{{ query-name }}` reference from another query are always
+protected, even if the referencing query is also a candidate. References inside
+quoted SQL literals do not count. Unknown dates are omitted from the oldest ranking.
+Review the preview before rerunning with `--yes`; removals are permanent.
 
 ### TUI
 
@@ -687,33 +719,15 @@ error: No query named 'nope'.
 exit=1
 ```
 
-## Coming next (finishing M6)
+## Releases
 
-Discovery and recall are done (M5: `search`, `edit`, run history), the
-[`examples/`](./examples) quickstart has landed, and the release plumbing is in
-place — a [`CHANGELOG.md`](./CHANGELOG.md) plus a tag-driven
-[release workflow](./.github/workflows/release.yml) that builds and verifies the
-sdist/wheel and attaches them to the GitHub Release (PyPI publish is opt-in via a
-repo secret). Shipping `v0.1.0` is now a one-liner for a maintainer:
-
-```console
-git tag v0.1.0 && git push origin v0.1.0
-```
-
-The [demo](#demo) is now wired up too: the README shows a real, reproducible
-still ([`demo/quackpack.svg`](./demo/quackpack.svg)) plus a recorded asciinema
-cast ([`demo/quackpack.cast`](./demo/quackpack.cast)), both generated from a
-CI-guarded walkthrough ([`demo/demo.sh`](./demo/demo.sh)); a
-[VHS](https://github.com/charmbracelet/vhs) tape ([`demo/demo.tape`](./demo/demo.tape))
-renders an animated GIF on demand. So the only remaining maintainer steps are
-(optionally) committing that GIF and tagging the `v0.1.0` release above.
-Every command's `--help` is now Markdown-rendered (clean inline-code, no stray
-markup), and exit codes follow the usual convention so quackpack scripts
-predictably (see [Exit codes](#exit-codes)).
+See the [changelog](./CHANGELOG.md) for released and unreleased changes. The
+[release workflow](./.github/workflows/release.yml) builds and verifies distribution
+artifacts for version tags; PyPI publishing is opt-in.
 
 ## Install
 
-From source today (PyPI publish lands with `v0.1.0`):
+Install from source:
 
 ```console
 # With uv (recommended):
@@ -727,12 +741,6 @@ git clone https://github.com/rwrife/quackpack && cd quackpack
 pip install -e ".[dev]"
 ```
 
-Once v0.1 is published:
-
-```console
-pipx install quackpack    # or: uv tool install quackpack
-```
-
 ## Tech
 
 Python · DuckDB · Typer · Rich · YAML. Boring on purpose.
@@ -740,7 +748,3 @@ Python · DuckDB · Typer · Rich · YAML. Boring on purpose.
 ## License
 
 MIT (see `LICENSE`). Release history lives in [`CHANGELOG.md`](./CHANGELOG.md).
-
----
-
-Part of an automated tool-lab experiment. Topic: `auto-tool-lab`.
